@@ -4,157 +4,140 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from deepface import DeepFace
+from sklearn.metrics import confusion_matrix
 
-# ------------- CONFIGURATION SECTION -------------
+# ----------- CONFIGURATION -----------
 
-# Base directory containing folders for each person with images inside
-# Example structure:
-# /path/to/indian_faces/
-#   └── person1/
-#         ├── img1.jpg
-#         └── img2.jpg
-#   └── person2/
-#         ├── img3.jpg
-#         └── img4.jpg
-base_dir = "C:/Users/himan/Downloads/archive/Test"  # <<< 🔁 CHANGE THIS to the actual path on your machine
+base_dir = "C:/Users/himan/Downloads/archive/Test"  # <<< CHANGE THIS to your dataset folder
 
-# List of all DeepFace-supported models, detectors, and similarity metrics you want to test
-models = ["Facenet512", "Facenet", "VGG-Face", "ArcFace", "Dlib", "GhostFaceNet",
-          "SFace", "OpenFace", "DeepFace", "DeepID"]
-
-detectors = ["retinaface", "mtcnn", "fastmtcnn", "dlib", "yolov8", "yunet",
-             "centerface", "mediapipe", "ssd", "opencv", "skip"]
-
-metrics = ["euclidean", "euclidean_l2", "cosine"]
-
-# Batch size determines how many image pairs are processed in each batch to avoid GPU overuse
-BATCH_SIZE = 100  # You can adjust based on available GPU RAM
+models = ["Facenet512", "Facenet", "VGG-Face", "ArcFace"]
+metrics = ["cosine", "euclidean_l2"]
+detector_backends = ["retinaface", "fastmtcnn", "centerface", "yunet"]  # <<< All detectors to test
 
 
-# ------------- STEP 1: Load Images into Grouped Dictionary -------------
+# ----------- STEP 1: Load Image Paths Grouped by Person -----------
 
 def load_grouped_images(base_dir):
-    """
-    Reads the image dataset from folders.
-    Returns a dictionary where:
-    - key: person name (i.e., folder name)
-    - value: list of full image paths belonging to that person
-    """
     grouped = {}
     for person in sorted(os.listdir(base_dir)):
         person_path = os.path.join(base_dir, person)
         if os.path.isdir(person_path):
-            images = [os.path.join(person_path, f) for f in os.listdir(person_path)
+            images = [os.path.join(person_path, f)
+                      for f in os.listdir(person_path)
                       if f.lower().endswith(('jpg', 'jpeg', 'png'))]
             if images:
                 grouped[person] = images
     return grouped
 
-
 grouped_images = load_grouped_images(base_dir)
 
 
-# ------------- STEP 2: Generate All Positive and Negative Pairs -------------
+# ----------- STEP 2: Generate Positive and Negative Pairs -----------
 
 def generate_pairs(grouped_images):
-    """
-    Generates all image pairs:
-    - Positive pairs: same person → label = 1
-    - Negative pairs: different persons → label = 0
-    Returns a list of tuples: (image1, image2, label)
-    """
     pairs = []
     persons = list(grouped_images.keys())
 
-    # Positive pairs: same folder (same person)
+    # Positive pairs: within each folder
     for person, imgs in grouped_images.items():
         for i in range(len(imgs)):
             for j in range(i + 1, len(imgs)):
                 pairs.append((imgs[i], imgs[j], 1))
 
-    # Negative pairs: between different persons
+    # Negative pairs: between folders
     for i in range(len(persons)):
         for j in range(i + 1, len(persons)):
             for img1 in grouped_images[persons[i]]:
                 for img2 in grouped_images[persons[j]]:
                     pairs.append((img1, img2, 0))
-
     return pairs
 
-
-# This contains thousands of (img1, img2, label) tuples
 pairs = generate_pairs(grouped_images)
 
 
-# ------------- STEP 3: Evaluate One Combination in Batches -------------
+# ----------- STEP 3: Precompute Embeddings -----------
 
-def evaluate_in_batches(model, detector, metric, pairs, batch_size=BATCH_SIZE):
-    """
-    Evaluates DeepFace.verify() over all image pairs in batches.
-    This is serial (non-parallel) but memory-safe for GPU usage.
-
-    Returns:
-    - y_true: ground truth labels (0 for negative, 1 for positive)
-    - y_pred: predicted labels from DeepFace
-    """
-    y_true, y_pred = [], []
-    total = len(pairs)
-
-    for i in range(0, total, batch_size):
-        batch = pairs[i:i + batch_size]
-        print(f"   → Processing batch {i + 1} to {min(i + batch_size, total)} / {total}")
-
-        for img1, img2, label in batch:
-            try:
-                result = DeepFace.verify(
-                    img1_path=img1,
-                    img2_path=img2,
-                    model_name=model,
-                    detector_backend=detector,
-                    distance_metric=metric,
-                    enforce_detection=False,  # skip if face not detected
-                    silent=True  # suppress logs
-                )
-                y_true.append(label)
-                y_pred.append(1 if result["verified"] else 0)
-            except:
-                # Skip this pair if any error (e.g., face not detected, broken file, etc.)
-                continue
-
-    return y_true, y_pred
+def compute_embeddings(image_paths, model_name, detector_backend):
+    embeddings = {}
+    for img_path in image_paths:
+        try:
+            rep = DeepFace.represent(
+                img_path=img_path,
+                model_name=model_name,
+                detector_backend=detector_backend,
+               )
+            embeddings[img_path] = rep[0]["embedding"]
+        except Exception as e:
+            print(f"[⚠️] Embedding failed for {img_path} using {detector_backend}: {e}")
+    return embeddings
 
 
-# ------------- STEP 4: Evaluate All Combinations -------------
+# ----------- STEP 4: Evaluate All Combinations -----------
 
 results = []
 
-# Total combinations = 10 models × 11 detectors × 3 metrics = 330
-for model, detector, metric in itertools.product(models, detectors, metrics):
-    print(f"\n🧪 Evaluating combination: {model} + {detector} + {metric}...")
+# Flatten list of all image paths once
+all_image_paths = [img for imgs in grouped_images.values() for img in imgs]
 
-    y_true, y_pred = evaluate_in_batches(model, detector, metric, pairs)
+# Loop over all detector backends
+for detector_backend in detector_backends:
+    print(f"\n🚀 Starting evaluation with detector: {detector_backend}")
 
-    if y_true:  # Only add results if some valid predictions were made
-        acc = accuracy_score(y_true, y_pred)
-        prec = precision_score(y_true, y_pred, zero_division=0)
-        rec = recall_score(y_true, y_pred, zero_division=0)
-        f1 = f1_score(y_true, y_pred, zero_division=0)
+    for model in models:
+        print(f"🔵 Computing embeddings for model: {model} using detector: {detector_backend}")
+        embeddings = compute_embeddings(all_image_paths, model, detector_backend)
+        print(f"✅ Total embeddings computed: {len(embeddings)}")
 
-        results.append({
-            "Model": model,
-            "Detector": detector,
-            "Metric": metric,
-            "Accuracy": acc,
-            "Precision": prec,
-            "Recall": rec,
-            "F1 Score": f1
-        })
+        for metric in metrics:
+            print(f"🧪 Evaluating {model} + {detector_backend} + {metric}...")
+            y_true, y_pred = [], []
 
-# ------------- STEP 5: Save Results to CSV -------------
+            for img1, img2, label in pairs:
+                if img1 in embeddings and img2 in embeddings:
+                    try:
+                        # Pass precomputed embeddings directly as img1_path / img2_path
+                        result = DeepFace.verify(
+                            img1_path=embeddings[img1],
+                            img2_path=embeddings[img2],
+                            model_name=model,
+                            detector_backend=detector_backend,
+                            distance_metric=metric,
+                        )
+                        pred = 1 if result["verified"] else 0
+                        y_true.append(label)
+                        y_pred.append(pred)
+                    except Exception as e:
+                        print(f"[❌] Error comparing {img1} & {img2}: {e}")
+                        continue
+
+            if y_true:
+                acc = accuracy_score(y_true, y_pred)
+                prec = precision_score(y_true, y_pred, zero_division=0)
+                rec = recall_score(y_true, y_pred, zero_division=0)
+                f1 = f1_score(y_true, y_pred, zero_division=0)
+
+                # Confusion Matrix: order is [[TN, FP], [FN, TP]]
+                cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+                tn, fp, fn, tp = cm.ravel()
+
+                results.append({
+                    "Model": model,
+                    "Metric": metric,
+                    "Detector": detector_backend,
+                    "Accuracy": acc,
+                    "Precision": prec,
+                    "Recall": rec,
+                    "F1 Score": f1,
+                    "TP": tp,
+                    "TN": tn,
+                    "FP": fp,
+                    "FN": fn
+                })
+
+# ----------- STEP 5: Save Results -----------
 
 df = pd.DataFrame(results)
+output_file = os.path.join(base_dir, "deepface_detector_comparison.csv")
+df.to_csv(output_file, index=False)
 
-# Save results for further analysis in Excel or Jupyter
-df.to_csv(base_dir + "/deepface_model_comparison.csv", index=False)
-
-print("\n✅ All evaluations completed. Results saved to 'deepface_model_comparison.csv'.")
+print(f"\n✅ All evaluations completed. Results saved to: {output_file}")
