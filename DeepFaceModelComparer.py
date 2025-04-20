@@ -3,7 +3,7 @@ import pandas as pd  # For storing and exporting results as DataFrame/CSV
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score  # Evaluation metrics
 from deepface import DeepFace  # DeepFace library for face recognition
 from sklearn.metrics import confusion_matrix  # To compute TP, FP, TN, FN
-
+import time
 # ----------- CONFIGURATION -----------
 
 base_dir = "C:/Users/himan/Downloads/archive/Image_Train/"  # <<< CHANGE THIS to your dataset folder path
@@ -11,6 +11,9 @@ base_dir = "C:/Users/himan/Downloads/archive/Image_Train/"  # <<< CHANGE THIS to
 models = ["Facenet512", "Facenet", "VGG-Face", "ArcFace"]  # List of DeepFace models to evaluate
 metrics = ["cosine", "euclidean_l2"]  # Distance metrics to test for face comparison
 detector_backends = ["retinaface", "fastmtcnn", "centerface", "yunet"]  # Face detectors to evaluate
+
+# ----------- START TIMER -----------
+start_time = time.time()
 
 # ----------- STEP 1: Load Image Paths Grouped by Person -----------
 
@@ -156,4 +159,6 @@ df = pd.DataFrame(results)  # Create a DataFrame from the results list
 output_file = os.path.join(base_dir, "deepface_detector_comparison.csv")  # Set output file path
 df.to_csv(output_file, index=False)  # Save results to CSV file
 
+end_time = time.time()
 print(f"\n✅ All evaluations completed. Results saved to: {output_file}")
+print(f"⏱️ Total execution time: {end_time - start_time:.2f} seconds")
