@@ -4,9 +4,15 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from deepface import DeepFace  # DeepFace library for face recognition
 from sklearn.metrics import confusion_matrix  # To compute TP, FP, TN, FN
 import time
+import gc
+from tensorflow import keras
+
 # ----------- CONFIGURATION -----------
 
-base_dir = "C:/Users/himan/Downloads/archive/Image_Train/"  # <<< CHANGE THIS to your dataset folder path
+base_dir = "C:/Users/himan/Downloads/archive/Test/"  # <<< CHANGE THIS to your dataset folder path
+# base_dir = "/media/himanshu/OS/Users/himan/Downloads/archive/Test/"  # <<< CHANGE THIS to your dataset folder path
+
+# base_dir = "/content/drive/MyDrive/DeepFace/Test"
 
 models = ["Facenet512", "Facenet", "VGG-Face", "ArcFace"]  # List of DeepFace models to evaluate
 metrics = ["cosine", "euclidean_l2"]  # Distance metrics to test for face comparison
@@ -152,6 +158,10 @@ for detector_backend in detector_backends:
                 })
             else:
                 print(f"[⚠️] Skipping scoring for {model} + {detector_backend} + {metric} — No valid pairs.")
+
+        del embeddings, failed_images
+        keras.backend.clear_session()
+        gc.collect()
 
 # ----------- STEP 5: Save Results -----------
 

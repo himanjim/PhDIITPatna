@@ -4,9 +4,13 @@ import pandas as pd
 from deepface import DeepFace
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import gc
+from tensorflow import keras
 
 # ----------- CONFIGURATION -----------
 base_dir = "C:/Users/himan/Downloads/archive/Test/"
+# base_dir = "/mnt/c/Users/himan/Downloads/archive/Test/"
+# base_dir = "/content/drive/MyDrive/DeepFace/Test"
 models = ["Facenet512", "Facenet", "VGG-Face", "ArcFace"]
 metrics = ["cosine", "euclidean_l2"]
 detector_backends = ["retinaface", "fastmtcnn", "centerface", "yunet"]
@@ -147,6 +151,9 @@ def main():
                         "Failed Embeddings": len(failed_images),
                         "Skipped Pairs": skipped
                     })
+        del embeddings, failed_images
+        keras.backend.clear_session()
+        gc.collect()
 
     df = pd.DataFrame(results)
     output_file = os.path.join(base_dir, "deepface_detector_comparison_parallel.csv")
