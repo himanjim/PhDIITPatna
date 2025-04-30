@@ -1,131 +1,184 @@
-import Utils as util
-import time as tm
-from datetime import datetime
-import pytz
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import pandas as pd
-from datetime import datetime
-import random
-from matplotlib.animation import FuncAnimation
-import threading
+import os  # For handling file and directory operations
+import pandas as pd  # For storing and exporting results as DataFrame/CSV
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score  # Evaluation metrics
+from deepface import DeepFace  # DeepFace library for face recognition
+from sklearn.metrics import confusion_matrix  # To compute TP, FP, TN, FN
 import time
-import os
+import gc
+from tensorflow import keras
 
-# --- Time and file setup ---
-indian_timezone = pytz.timezone('Asia/Calcutta')
-today_str = datetime.now(indian_timezone).strftime('%Y-%m-%d')
-DATA_FILE = f"premium_data_{today_str}.csv"
+# ----------- CONFIGURATION -----------
 
-# --- Load persisted data if available ---
-if os.path.exists(DATA_FILE):
-    df = pd.read_csv(DATA_FILE, parse_dates=['timestamp'])
-else:
-    df = pd.DataFrame(columns=['timestamp', 'value'])
+base_dir = "C:/Users/USER/Downloads/archive (1)/Image_Train/"  # <<< CHANGE THIS to your dataset folder path
+# base_dir = "/media/himanshu/OS/Users/himan/Downloads/archive/Test/"  # <<< CHANGE THIS to your dataset folder path
 
-# --- Setup Plot ---
-fig, ax = plt.subplots(figsize=(10, 6))
-line, = ax.plot([], [], lw=2)
-ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-plt.title('Live Data Chart (Smooth & Realtime)')
-plt.xlabel('Time')
-plt.ylabel('Value')
-lock = threading.Lock()
+# base_dir = "/content/drive/MyDrive/DeepFace/Test"
 
-# --- Function to add new data point ---
-def add_data(new_time, new_value):
-    global df
-    with lock:
-        new_row = pd.DataFrame({'timestamp': [new_time], 'value': [new_value]})
-        df = pd.concat([df, new_row], ignore_index=True)
-        new_row.to_csv(DATA_FILE, mode='a', header=not os.path.exists(DATA_FILE), index=False)
+models = ["Facenet512", "VGG-Face", "ArcFace"]  # List of DeepFace models to evaluate
+metrics = ["cosine", "euclidean_l2"]  # Distance metrics to test for face comparison
+detector_backends = ["retinaface", "fastmtcnn"]  # Face detectors to evaluate
 
-# --- Animation Update Function ---
-def animate(frame):
-    with lock:
-        if not df.empty:
-            line.set_data(df['timestamp'], df['value'])
-            ax.relim()
-            ax.autoscale_view()
-            fig.autofmt_xdate()
+# ----------- START TIMER -----------
+start_time = time.time()
 
-# --- Data fetching loop ---
-def fetch_data_loop():
-    try:
-        while True:
-            now = datetime.now()
-            original_options_premium_value = None
-            highest_options_premium_value = None
+# ----------- STEP 1: Load Image Paths Grouped by Person -----------
 
-            if datetime.now(indian_timezone).time() > util.MARKET_END_TIME:
-                print(f"Market is closed. Hence exiting.")
-                exit(0)
 
-            try:
-                ul_live_quote = kite.quote(under_lying_symbol)
-                ul_ltp = ul_live_quote[under_lying_symbol]['last_price']
-                ul_ltp_round = round(ul_ltp / STRIKE_MULTIPLE) * STRIKE_MULTIPLE
-                option_pe = OPTIONS_EXCHANGE + PART_SYMBOL + str(ul_ltp_round) + 'PE'
-                option_ce = OPTIONS_EXCHANGE + PART_SYMBOL + str(ul_ltp_round) + 'CE'
-                option_quotes = kite.quote([option_pe, option_ce])
-            except Exception as e:
-                print(f"An error occurred: {e}")
-                tm.sleep(2)
-                continue
+def load_grouped_images(base_dir):
+    grouped = {}  # Dictionary to store image paths grouped by person
+    for person in sorted(os.listdir(base_dir)):  # Iterate over folders in base_dir
+        person_path = os.path.join(base_dir, person)
+        if os.path.isdir(person_path):  # Ensure it's a directory (not a file)
+            images = [os.path.join(person_path, f)
+                      for f in os.listdir(person_path)
+                      if f.lower().endswith(('jpg', 'jpeg', 'png'))]  # Collect image paths with valid extensions
+            if images:
+                grouped[person] = images  # Add to dictionary if images exist
+    return grouped  # Return grouped dictionary
 
-            option_premium_value = 0
-            for trading_symbol, live_quote in option_quotes.items():
-                option_premium_value += (live_quote['last_price'] * NO_OF_LOTS)
 
-            if highest_options_premium_value is None or option_premium_value > highest_options_premium_value:
-                highest_options_premium_value = option_premium_value
+grouped_images = load_grouped_images(base_dir)  # Load image paths grouped by person
 
-            if original_options_premium_value is None:
-                original_options_premium_value = option_premium_value
+# ----------- STEP 2: Generate Positive and Negative Pairs -----------
 
-            print(
-                f"Strike:{ul_ltp_round}. Current PREM is: {option_premium_value}(CE:{option_quotes[option_ce]['last_price']} PE:{option_quotes[option_pe]['last_price']}),  original : {original_options_premium_value} and highest : {highest_options_premium_value} at {datetime.now(indian_timezone).time()}.")
 
-            add_data(now, option_premium_value)
-            print(f"Fetched at {now.strftime('%H:%M:%S')}: {option_premium_value:.2f}")
-            time.sleep(2)
-    except Exception as e:
-        print(f"Error in data fetching thread: {e}")
+def generate_pairs(grouped_images):
+    pairs = []  # List to store image pairs with labels
+    persons = list(grouped_images.keys())  # Get list of person IDs (folder names)
 
-# --- Main execution ---
-if __name__ == '__main__':
+    # Positive pairs: all combinations of two images from the same person
+    for person, imgs in grouped_images.items():
+        for i in range(len(imgs)):
+            for j in range(i + 1, len(imgs)):
+                pairs.append((imgs[i], imgs[j], 1))  # Label 1 for positive match
 
-    kite = util.intialize_kite_api()
-    choice = 1
-    premium_difference_for_action = 5000
+    # Negative pairs: all combinations of one image from different persons
+    for i in range(len(persons)):
+        for j in range(i + 1, len(persons)):
+            for img1 in grouped_images[persons[i]]:
+                for img2 in grouped_images[persons[j]]:
+                    pairs.append((img1, img2, 0))  # Label 0 for negative match
+    return pairs  # Return list of labeled pairs
 
-    if choice == 1:
-        UNDER_LYING_EXCHANGE = kite.EXCHANGE_NSE
-        UNDERLYING = ':NIFTY 50'
-        OPTIONS_EXCHANGE = kite.EXCHANGE_NFO
-        PART_SYMBOL = ':NIFTY25430'
-        NO_OF_LOTS = 300
-        STRIKE_MULTIPLE = 50
-    elif choice == 2:
-        UNDER_LYING_EXCHANGE = kite.EXCHANGE_BSE
-        UNDERLYING = ':SENSEX'
-        OPTIONS_EXCHANGE = kite.EXCHANGE_BFO
-        PART_SYMBOL = ':SENSEX25APR'
-        NO_OF_LOTS = 100
-        STRIKE_MULTIPLE = 100
-    else:
-        UNDER_LYING_EXCHANGE = kite.EXCHANGE_NSE
-        UNDERLYING = ':NIFTY BANK'
-        OPTIONS_EXCHANGE = kite.EXCHANGE_NFO
-        PART_SYMBOL = ':BANKNIFTY25APR'
-        NO_OF_LOTS = 120
-        STRIKE_MULTIPLE = 100
 
-    under_lying_symbol = UNDER_LYING_EXCHANGE + UNDERLYING
+pairs = generate_pairs(grouped_images)  # Generate all image pairs
 
-    while datetime.now(indian_timezone).time() < util.MARKET_START_TIME:
-        pass
+# ----------- STEP 3: Precompute Embeddings -----------
 
-    threading.Thread(target=fetch_data_loop, daemon=True).start()
-    ani = FuncAnimation(fig, animate, interval=500)
-    plt.show()
+
+def compute_embeddings(image_paths, model_name, detector_backend):
+    failed_images = []  # To track failed embeddings
+
+    embeddings = {}  # Dictionary to hold image path to embedding mapping
+    for img_path in image_paths:
+        try:
+            # Extract embedding using DeepFace
+            rep = DeepFace.represent(
+                img_path=img_path,
+                model_name=model_name,
+                detector_backend=detector_backend,
+                enforce_detection=True
+            )
+            embeddings[img_path] = rep[0]["embedding"]  # Store embedding
+        except Exception as e:
+            print(f"[⚠️] Embedding failed for {img_path} using {detector_backend}: {e}")
+            failed_images.append(img_path)  # Log failed image
+    return embeddings, failed_images  # Return successful embeddings and failures
+
+
+# ----------- STEP 4: Evaluate All Combinations -----------
+
+results = []  # Store evaluation metrics for all combinations
+
+# Flatten all image paths from grouped_images into one list
+all_image_paths = [img for imgs in grouped_images.values() for img in imgs]
+
+# Iterate over all detector backends
+for detector_backend in detector_backends:
+    print(f"\n🚀 Starting evaluation with detector: {detector_backend}")
+
+    for model in models:
+
+        if (detector_backend == 'retinaface' and model == 'Facenet512') or (detector_backend == 'retinaface' and model == 'VGG-Face'):
+            continue
+
+        print(f"🔵 Computing embeddings for model: {model} using detector: {detector_backend} at {round((time.time() - start_time) / 60, 2)} minutes!")
+        embeddings, failed_images = compute_embeddings(all_image_paths, model, detector_backend)
+        print(f"✅ Embeddings created: {len(embeddings)} | ❌ Failed: {len(failed_images)} at {round((time.time() - start_time) / 60, 2)} minutes!")
+
+        for metric in metrics:
+            print(f"🧪 Evaluating {model} + {detector_backend} + {metric}...at {round((time.time() - start_time) / 60, 2)} minutes!")
+            y_true, y_pred = [], []  # Lists to hold actual and predicted labels
+            skipped_pairs = 0  # Track pairs that were skipped due to failure
+
+            for img1, img2, label in pairs:
+                if img1 in embeddings and img2 in embeddings:
+                    try:
+                        # Use precomputed embeddings instead of image paths
+                        result = DeepFace.verify(
+                            img1_path=embeddings[img1],
+                            img2_path=embeddings[img2],
+                            model_name=model,
+                            detector_backend=detector_backend,
+                            distance_metric=metric,
+                            enforce_detection=False,
+                            silent=True
+                        )
+
+                        y_true.append(label)
+                        y_pred.append(1 if result["verified"] else 0)  # Convert boolean result to int
+                    except Exception as e:
+                        print(f"[❌] Error comparing {img1} & {img2}: {e}")
+                        skipped_pairs += 1
+                else:
+                    skipped_pairs += 1  # Skip if embeddings not available
+
+            print(f"\n✅ Evaluation done at {round((time.time() - start_time) / 60, 2)} minutes!")
+
+            if y_true:
+                # Compute performance metrics
+                acc = accuracy_score(y_true, y_pred)
+                prec = precision_score(y_true, y_pred, zero_division=0)
+                rec = recall_score(y_true, y_pred, zero_division=0)
+                f1 = f1_score(y_true, y_pred, zero_division=0)
+
+                # Compute confusion matrix to get TP, TN, FP, FN
+                cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+                tn, fp, fn, tp = cm.ravel()
+
+                # Append result for this configuration
+                results.append({
+                    "Model": model,
+                    "Metric": metric,
+                    "Detector": detector_backend,
+                    "Accuracy": acc,
+                    "Precision": prec,
+                    "Recall": rec,
+                    "F1 Score": f1,
+                    "TP": tp,
+                    "TN": tn,
+                    "FP": fp,
+                    "FN": fn,
+                    "Failed Embeddings": len(failed_images),
+                    "Skipped Pairs": skipped_pairs
+                })
+            else:
+                print(f"[⚠️] Skipping scoring for {model} + {detector_backend} + {metric} — No valid pairs.")
+
+        del embeddings, failed_images
+        keras.backend.clear_session()
+        gc.collect()
+
+        df = pd.DataFrame(results)  # Create a DataFrame from the results list
+        output_file = os.path.join(base_dir, "deepface_detector_comparison.csv")  # Set output file path
+        df.to_csv(output_file, index=False)  # Save results to CSV file
+
+# ----------- STEP 5: Save Results -----------
+
+df = pd.DataFrame(results)  # Create a DataFrame from the results list
+output_file = os.path.join(base_dir, "deepface_detector_comparison.csv")  # Set output file path
+df.to_csv(output_file, index=False)  # Save results to CSV file
+
+end_time = time.time()
+print(f"\n✅ All evaluations completed. Results saved to: {output_file}")
+print(f"⏱️ Total execution time: {end_time - start_time:.2f} seconds")
