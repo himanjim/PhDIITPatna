@@ -8,7 +8,7 @@ import uvicorn
 
 # Configuration for embedding dimensions and count
 DIMENSIONS = 512
-NUM_EMBEDDINGS = 100
+NUM_EMBEDDINGS = 1000
 
 # Initialize FAISS index with dummy embeddings
 faiss_index = faiss.IndexFlatL2(DIMENSIONS)
