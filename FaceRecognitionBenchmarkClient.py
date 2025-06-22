@@ -12,20 +12,21 @@ import requests
 import random
 import psutil
 from statistics import mean
-import cv2
+from concurrent.futures import ThreadPoolExecutor
 import traceback
 
 # Configuration parameters
-NUM_VOTERS_LIST = [10]  # Adjust for load testing
+NUM_VOTERS_LIST = [1, 10, 100]  # Adjust for load testing
 SERVER_URL = "http://localhost:8000/verify"
 SIMULATED_NETWORK_LATENCY = (10, 50)  # Simulated network delay in milliseconds
 TIMEOUT = 100  # HTTP request timeout in seconds
 
 # Get path to voter_images folder
 # Assumes images are located in Downloads/voter_images
-downloads_path = os.path.join(os.environ["USERPROFILE"], "Downloads")
-posix_path = Path(downloads_path).as_posix()
-IMAGE_FOLDER = posix_path + "/voter_images"
+# downloads_path = os.path.join(os.environ["USERPROFILE"], "Downloads")
+# posix_path = Path(downloads_path).as_posix()
+# IMAGE_FOLDER = posix_path + "/voter_images"
+IMAGE_FOLDER = "voter_images"
 
 # Load all image file paths from voter_images directory
 def load_face_images(folder_path):
@@ -47,7 +48,16 @@ def simulate_request(results, index):
         with open(img_path, "rb") as f:
             files = {'file': (os.path.basename(img_path), f, 'image/jpeg')}
             time.sleep(random.uniform(*SIMULATED_NETWORK_LATENCY) / 1000.0)
-            response = requests.post(SERVER_URL, files=files, timeout=TIMEOUT)
+
+            for attempt in range(3):
+                try:
+                    response = requests.post(SERVER_URL, files=files, timeout=TIMEOUT)
+                    break
+                except requests.ConnectionError as e:
+                    time.sleep(2 ** attempt)
+            else:
+                response = None
+
             end_time = time.perf_counter()
 
             duration = (end_time - start_time) * 1000  # Total request duration in ms
@@ -55,7 +65,7 @@ def simulate_request(results, index):
 
             if status == 200:
                 data = response.json()
-                print(data)
+                # print(data)
                 embedding_time = data.get('embedding_time_ms')
                 faiss_call_time = data.get('faiss_call_time_ms')
                 faiss_search_time = data.get('faiss_search_time_ms')
@@ -91,16 +101,14 @@ def get_cpu_memory_usage():
 summary = []
 for num_voters in NUM_VOTERS_LIST:
     results = [None] * num_voters
-    threads = [Thread(target=simulate_request, args=(results, i)) for i in range(num_voters)]
-
     # Capture system stats before load
     cpu_before, mem_before = get_cpu_memory_usage()
     t0 = time.perf_counter()
 
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    with ThreadPoolExecutor(max_workers=min(num_voters, 100)) as executor:
+        futures = [executor.submit(simulate_request, results, i) for i in range(num_voters)]
+        for future in futures:
+            future.result()
 
     # Capture system stats after load
     t1 = time.perf_counter()
@@ -129,7 +137,8 @@ for num_voters in NUM_VOTERS_LIST:
     })
 
 # Output results to CSV and console
-output_csv = posix_path + "/benchmark_results_detailed.csv"
+# output_csv = posix_path + "/benchmark_results_detailed.csv"
+output_csv = "benchmark_results_detailed.csv"
 df = pd.DataFrame(summary)
 print(df)
 df.to_csv(output_csv, index=False)

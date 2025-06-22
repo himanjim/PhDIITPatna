@@ -38,6 +38,7 @@ async def verify_face(file: UploadFile = File(...)):
         rep = DeepFace.represent(
             img_path=img,
             model_name="Facenet512",
+            detector_backend ="retinaface",
             enforce_detection=False
         )
         embed_end = time.perf_counter()
@@ -67,8 +68,8 @@ async def verify_face(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ----------- Entry Point for Standalone Run -----------
-import uvicorn
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# import uvicorn
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 #gunicorn deepface_server:app -w 1 --threads 8 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000

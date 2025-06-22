@@ -84,9 +84,9 @@ def search(query: QueryVector):
         return {"error": str(e)}
 
 # ----------- Entry Point for Standalone Run -----------
-import uvicorn
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=9000)
+# import uvicorn
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="0.0.0.0", port=9000)
 
 # Note: Run under Gunicorn with --preload and a single process to avoid index duplication.
 # Example:
