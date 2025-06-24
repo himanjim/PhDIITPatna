@@ -8,12 +8,13 @@ from pathlib import Path
 import os
 import pandas as pd
 from threading import Thread
-import requests
 import random
 import psutil
 from statistics import mean
 from concurrent.futures import ThreadPoolExecutor
 import traceback
+import httpx
+client = httpx.Client(timeout=100)
 
 # Configuration parameters
 NUM_VOTERS_LIST = [1, 10, 100]  # Adjust for load testing
@@ -45,49 +46,44 @@ def simulate_request(results, index):
     img_path = random.choice(image_paths)
 
     try:
+        img_filename = os.path.basename(img_path)
         with open(img_path, "rb") as f:
-            files = {'file': (os.path.basename(img_path), f, 'image/jpeg')}
-            time.sleep(random.uniform(*SIMULATED_NETWORK_LATENCY) / 1000.0)
+            img_data = f.read()
 
-            for attempt in range(3):
-                try:
-                    response = requests.post(SERVER_URL, files=files, timeout=TIMEOUT)
-                    break
-                except requests.ConnectionError as e:
-                    time.sleep(2 ** attempt)
-            else:
-                response = None
+        files = {'file': (img_filename, img_data, 'image/jpeg')}
+        time.sleep(random.uniform(*SIMULATED_NETWORK_LATENCY) / 1000.0)
 
-            end_time = time.perf_counter()
+        # Attempt request up to 3 times with exponential backoff
+        response = None
+        for attempt in range(3):
+            try:
+                response = client.post(SERVER_URL, files=files)
+                break  # Success
+            except httpx.RequestError as e:
+                time.sleep(2 ** attempt)
 
-            duration = (end_time - start_time) * 1000  # Total request duration in ms
-            status = response.status_code
+        end_time = time.perf_counter()
+        duration = (end_time - start_time) * 1000  # Total request duration in ms
 
-            if status == 200:
-                data = response.json()
-                # print(data)
-                embedding_time = data.get('embedding_time_ms')
-                faiss_call_time = data.get('faiss_call_time_ms')
-                faiss_search_time = data.get('faiss_search_time_ms')
-                faiss_update_time = data.get('faiss_index_update_time_ms')
-                distance = data.get('distance')
-                match_index = data.get('match_index')
-
-                results[index] = (
-                    duration, status,
-                    embedding_time,
-                    faiss_call_time,
-                    faiss_search_time,
-                    faiss_update_time,
-                    distance, match_index
-                )
-            else:
-                print(f"[{index}] ❌ Request failed with status code: {status}")
-                results[index] = (duration, status, None, None, None, None, None, None)
+        if response and response.status_code == 200:
+            data = response.json()
+            results[index] = (
+                duration,
+                response.status_code,
+                data.get('embedding_time_ms'),
+                data.get('faiss_call_time_ms'),
+                data.get('faiss_search_time_ms'),
+                data.get('faiss_index_update_time_ms'),
+                data.get('distance'),
+                data.get('match_index')
+            )
+        else:
+            print(f"[{index}] ❌ Request failed with status code: {response.status_code}")
+            results[index] = (duration, 500, None, None, None, None, None, None)
 
     except Exception as e:
         print(f"[{index}] ❌ Exception occurred:", str(e))
-        traceback.print_exc()
+        # traceback.print_exc()
         results[index] = (-1, 500, None, None, None, None, None, None)
 
 # Capture CPU and memory usage before and after test batches
@@ -141,5 +137,6 @@ for num_voters in NUM_VOTERS_LIST:
 output_csv = "benchmark_results_detailed.csv"
 df = pd.DataFrame(summary)
 print(df)
+print(durations)
 df.to_csv(output_csv, index=False)
 print(f"\n✅ Metrics saved to {output_csv}")

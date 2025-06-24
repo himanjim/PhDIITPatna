@@ -15,6 +15,10 @@ FAISS_API_URL = "http://localhost:9000/search"  # FAISS microservice endpoint
 
 # Enable TensorFlow GPU memory growth before any TF/DL imports
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
+
+import tensorflow as tf
+print("[INFO] Available GPUs:", tf.config.list_physical_devices('GPU'))
 
 # Initialize FastAPI
 app = FastAPI()

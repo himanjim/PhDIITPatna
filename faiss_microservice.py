@@ -20,7 +20,7 @@ IO_FLAGS = faiss.IO_FLAG_MMAP           # Memory-mapped I/O to avoid loading ful
 print("[INFO] Loading FAISS index with mmap...")
 if not os.path.exists(INDEX_FILE):
     print(f"[WARNING] Index file {INDEX_FILE} not found. Creating dummy index...")
-    embeddings = np.random.rand(1000, EMBEDDING_DIM).astype('float32')
+    embeddings = np.random.rand(1000000, EMBEDDING_DIM).astype('float32')
     index = faiss.IndexFlatL2(EMBEDDING_DIM)
     index.add(embeddings)
     faiss.write_index(index, INDEX_FILE)
@@ -28,7 +28,7 @@ if not os.path.exists(INDEX_FILE):
 # Load the index from disk (shared via copy-on-write when using Gunicorn --preload)
 faiss_index = faiss.read_index(INDEX_FILE, IO_FLAGS)
 print(f"[INFO] Loaded index with {faiss_index.ntotal} entries.")
-
+print(f"FAISS index type: {type(faiss_index)}")
 
 # Try to move index to GPU if available
 try:
@@ -36,6 +36,7 @@ try:
         print("✅ FAISS GPU support detected. Loading index to GPU...")
         res = faiss.StandardGpuResources()
         faiss_index = faiss.index_cpu_to_gpu(res, 0, faiss_index)
+        print(f"FAISS index type: {type(faiss_index)}")
     else:
         print("⚠️ FAISS GPU not available. Using CPU index.")
 except Exception as e:
