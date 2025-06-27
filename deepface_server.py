@@ -1,5 +1,9 @@
 # deepface_server.py
 # FastAPI server that accepts images, runs DeepFace embedding, and sends the embedding to a FAISS microservice
+import os
+# Enable TensorFlow GPU memory growth before any TF/DL imports
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -7,15 +11,13 @@ import numpy as np
 import cv2
 import requests
 from deepface import DeepFace
-import os
+
 import time
 
 # ----------- Configuration -----------
 FAISS_API_URL = "http://localhost:9000/search"  # FAISS microservice endpoint
 
-# Enable TensorFlow GPU memory growth before any TF/DL imports
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
+
 
 import tensorflow as tf
 print("[INFO] Available GPUs:", tf.config.list_physical_devices('GPU'))
