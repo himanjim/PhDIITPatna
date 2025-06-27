@@ -1,5 +1,9 @@
 # ----------- Imports -----------
 import os
+# Enable TensorFlow GPU memory growth before any TF/DL imports
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
+
 import time
 import psutil
 import faiss
@@ -10,6 +14,9 @@ import platform
 import random
 import threading
 
+import tensorflow as tf
+print("[INFO] Available GPUs:", tf.config.list_physical_devices('GPU'))
+
 # ----------- Configuration -----------
 INDEX_FILE = "voter_index_flatl2.faiss"   # FAISS index file
 EMBEDDING_DIM = 512                        # Facenet512 dimension
@@ -17,9 +24,11 @@ IO_FLAGS = faiss.IO_FLAG_MMAP              # Memory-map for FAISS
 if platform.system() != "Windows":
     IMAGE_FOLDER = "/content/drive/MyDrive/voter_images"  # Image source
     CONCURRENCY_LEVELS = [1, 10, 100, 1000]  # Batch sizes to test
+    FAISS_INDEX_SIZE = 1000000
 else:
-    IMAGE_FOLDER = "C:/Users/USER/Downloads/voter_images"  # Image source
+    IMAGE_FOLDER = "C:/Users/himan/Downloads/voter_images"  # Image source
     CONCURRENCY_LEVELS = [1, 10]  # Batch sizes to test
+    FAISS_INDEX_SIZE = 1000
 
 TOP_K = 5                                  # FAISS KNN
 
@@ -29,7 +38,7 @@ index_lock = threading.Lock()
 print("[INFO] Loading FAISS index...")
 if not os.path.exists(INDEX_FILE):
     print("[WARNING] Index file not found. Creating dummy index...")
-    dummy_embeddings = np.random.rand(1000, EMBEDDING_DIM).astype('float32')
+    dummy_embeddings = np.random.rand(FAISS_INDEX_SIZE, EMBEDDING_DIM).astype('float32')
     index = faiss.IndexFlatL2(EMBEDDING_DIM)
     index.add(dummy_embeddings)
     faiss.write_index(index, INDEX_FILE)
@@ -83,12 +92,21 @@ def process_batch(image_paths):
 
         # Build numpy array from embeddings
         valid_embeddings = []
-        for r in reps:
+
+        # Normalize reps: always make it a list of dicts
+        if isinstance(reps[0], list):  # batch mode: list of lists
+            flattened = [item[0] for item in reps if isinstance(item, list) and item]
+        else:  # single image mode
+            flattened = reps
+
+        # Convert each embedding
+        for r in flattened:
             try:
                 emb = np.array(r["embedding"], dtype='float32').reshape(1, -1)
                 valid_embeddings.append(emb)
-            except:
+            except Exception as e:
                 stats["failed"] += 1
+                print(f"❌ Exception occurred in converting embeddings:", str(e))
 
         if not valid_embeddings:
             stats["failed"] = len(image_paths)
@@ -117,16 +135,20 @@ def process_batch(image_paths):
 
     except Exception as e:
         stats["failed"] = len(image_paths)
+        print(f"❌ Exception occurred:", str(e))
 
     return stats
 
 # ----------- Benchmark Function -----------
 def benchmark(batch_size):
     print(f"\n🚀 Benchmarking {batch_size} concurrent voters...")
+    # Get all image files from the folder
     image_files = [os.path.join(IMAGE_FOLDER, f)
                    for f in os.listdir(IMAGE_FOLDER)
                    if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    selected_images = image_files[:batch_size]
+
+    # Randomly select N images with replacement
+    selected_images = random.choices(image_files, k=batch_size)
 
     start_time = time.time()
     stats = process_batch(selected_images)
