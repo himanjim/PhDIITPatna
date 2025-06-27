@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Batch Compress Images for DeepFace</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .preview { max-width: 100px; margin: 10px; }
+    #controls { margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+<h2>Compress Images for DeepFace (224x224 @ 92% JPEG)</h2>
+<input type="file" id="input" accept="image/*" multiple>
+<div id="controls">
+  <br>
+  <button onclick="startBatch()">Start Compression</button>
+  <button onclick="downloadNextBatch()" disabled id="nextBtn">Download Next 30</button>
+</div>
+<div id="output"></div>
+
+<script>
+let compressedBlobs = [];
+let filenames = [];
+let currentIndex = 0;
+
+async function startBatch() {
+  const input = document.getElementById('input');
+  const files = input.files;
+  const output = document.getElementById('output');
+  const nextBtn = document.getElementById('nextBtn');
+  output.innerHTML = '';
+  compressedBlobs = [];
+  filenames = [];
+  currentIndex = 0;
+  nextBtn.disabled = true;
+
+  if (files.length === 0) {
+    alert('Please select images first.');
+    return;
+  }
+
+  for (let file of files) {
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
+
+    await new Promise((resolve) => {
+      img.onload = function () {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 224;
+        canvas.height = 224;
+        ctx.drawImage(img, 0, 0, 224, 224);
+
+        canvas.toBlob((blob) => {
+          compressedBlobs.push(blob);
+          filenames.push(file.name.replace(/\.[^/.]+$/, '') + '_deepface.jpg');
+
+          const preview = document.createElement('img');
+          preview.src = URL.createObjectURL(blob);
+          preview.className = 'preview';
+          output.appendChild(preview);
+          resolve();
+        }, 'image/jpeg', 0.92);
+      };
+    });
+  }
+
+  nextBtn.disabled = false;
+  alert("Compression complete. Click 'Download Next 30' to begin downloading.");
+}
+
+function downloadNextBatch() {
+  const batchSize = 10;
+  const end = Math.min(currentIndex + batchSize, compressedBlobs.length);
+
+  for (let i = currentIndex; i < end; i++) {
+    const downloadLink = document.createElement('a');
+    downloadLink.href = URL.createObjectURL(compressedBlobs[i]);
+    downloadLink.download = filenames[i];
+    downloadLink.click();
+  }
+
+  currentIndex = end;
+
+  if (currentIndex >= compressedBlobs.length) {
+    document.getElementById('nextBtn').disabled = true;
+    alert("All files downloaded.");
+  }
+}
+</script>
+
+</body>
+</html>
