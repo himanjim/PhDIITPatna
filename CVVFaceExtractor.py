@@ -1,10 +1,3 @@
-import re
-
-match = re.match(r'^([A-Za-z]+)', 'varun_6_face.png')
-print(match.group(1))
-exit(0)
-
-
 import cv2
 import mediapipe as mp
 import os
@@ -19,7 +12,7 @@ downloads_path = os.path.join(os.environ["USERPROFILE"], "Downloads")
 downloads_folder = Path(downloads_path).as_posix()
 
 input_folder = os.path.join(downloads_folder, "voter_images")
-output_folder = os.path.join(downloads_folder, "voter_ime")
+output_folder = os.path.join(downloads_folder, "voter_images_faces")
 os.makedirs(output_folder, exist_ok=True)
 
 mp_face_detection = mp.solutions.face_detection
@@ -67,8 +60,9 @@ with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence
         face_crop = image[y1:y2, x1:x2]
         face_resized = cv2.resize(face_crop, (224, 224))
 
-        output_path = os.path.join(output_folder, f"{os.path.splitext(filename)[0]}_face.jpg")
-        cv2.imwrite(output_path, face_resized)
+        output_path = os.path.join(output_folder, f"{os.path.splitext(filename)[0]}_face.png")
+        cv2.imwrite(output_path, face_resized)  # PNG is lossless by default
+
         print(f"Saved: {output_path}")
 
 print("✅ Done.")
