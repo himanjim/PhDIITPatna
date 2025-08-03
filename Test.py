@@ -1,3 +1,25 @@
+from docx import Document
+import re
+
+def extract_all_square_brackets(docx_path):
+    doc = Document(docx_path)
+    bracket_expressions = []
+
+    pattern = r'\[.*?\]'  # non-greedy match for anything inside square brackets
+
+    for para in doc.paragraphs:
+        matches = re.findall(pattern, para.text)
+        bracket_expressions.extend(matches)
+
+    return bracket_expressions
+
+# Example usage
+file_path = "C:/Users/himan/Downloads/Sharm Himanshu IEEE_SCI.docx"
+reference_numbers = extract_all_square_brackets(file_path)
+print("Reference numbers found:", reference_numbers)
+
+exit(0)
+
 import re
 
 match = re.match(r'^([A-Za-z]+)', 'varun_6_face.png')
