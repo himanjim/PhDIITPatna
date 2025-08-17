@@ -88,6 +88,10 @@ async def search(q: QueryVector):
     # Measure FAISS search time
     t0 = time.time()
     D, I = faiss_index.search(vec, K_NEIGHBOURS)
+
+    dist_sq = float(D[0][0])
+    dist_l2 = float(dist_sq ** 0.5)
+
     t1 = time.time()
     search_time_ms = (t1 - t0) * 1000
 
@@ -101,7 +105,9 @@ async def search(q: QueryVector):
 
     return {
         "nearest_id": int(I[0][0]),
-        "distance": float(D[0][0]),
+        "distance": dist_sq,               # back-compat: squared L2
+        "distance_sq": dist_sq,            # explicit squared L2
+        "distance_l2": dist_l2,            # true L2 (sqrt)
         "faiss_search_time_ms": round(search_time_ms, 3),
         "faiss_index_update_time_ms": round(update_time_ms, 3)
     }
@@ -118,7 +124,9 @@ async def search_batch(b: QueryBatch):
     if ENABLE_UPDATES:
         for v, vid in zip(arr, b.voter_ids):
             await update_q.put((v.reshape(1, -1), vid))
-    return [{"voter_id": vid, "nearest_id": int(i[0]), "distance": float(d[0])}
+    return [{"voter_id": vid, "nearest_id": int(i[0]), "distance": float(d[0]),            # squared L2 (back-compat)
+    "distance_sq": float(d[0]),
+    "distance_l2": float(float(d[0]) ** 0.5)}
             for vid, i, d in zip(b.voter_ids, I, D)]
 
 @app.get("/ping")

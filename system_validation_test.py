@@ -37,7 +37,10 @@ OUTPUT_NAME = "683"                 # embedding tensor name
 IMAGE_SIZE  = (112, 112)            # width, height expected by the model
 
 # Match acceptance threshold for verification
-DISTANCE_THRESHOLD = 1.1
+# Match acceptance threshold for verification
+# (FAISS IndexFlatL2 returns **squared L2**, so use τ² from calibration)
+TAU_L2 = 1.150
+DISTANCE_THRESHOLD = TAU_L2 * TAU_L2   # 1.322
 
 # Optional HTTP timeout for FAISS requests (seconds)
 HTTP_TIMEOUT = 30
@@ -73,8 +76,10 @@ def get_embedding(triton_client: InferenceServerClient, chw_img: np.ndarray) -> 
         inputs=[infer_input],
         outputs=[infer_output]
     )
-    # Output tensor is [1, D] -> take first row
-    return result.as_numpy(OUTPUT_NAME)[0]
+    vec = result.as_numpy(OUTPUT_NAME)[0].astype(np.float32)
+    # NEW: unit-normalize the embedding (ArcFace/InsightFace geometry)
+    vec = vec / (np.linalg.norm(vec) + 1e-8)
+    return vec
 
 # ───────────────────────── FAISS HELPERS ───────────────────────── #
 def faiss_add(voter_id: int, embedding: np.ndarray):
@@ -162,7 +167,7 @@ def main():
     for vid, emb in embeddings.items():
         try:
             found_id, dist, _ = faiss_search_once(vid, emb)
-            if found_id == vid and dist < DISTANCE_THRESHOLD:
+            if found_id == vid and dist <= DISTANCE_THRESHOLD:  # τ² comparison
                 passed.append((vid, dist))
                 print(f"  ✔ vid={vid:4d}  dist={dist:.4f}")
             else:
