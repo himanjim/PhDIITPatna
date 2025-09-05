@@ -1,5 +1,5 @@
 ****************************
-InsightFace setup:
+# InsightFace setup:
 
 mkdir -p ~/triton_test/model_repository/buffalo_l/1
 cd ~/triton_test/model_repository/buffalo_l
@@ -75,25 +75,25 @@ sudo docker run --gpus all --net host --shm-size 8g --ipc host --ulimit memlock=
 
 
 
-# 1. Pull the matching SDK image
+1. Pull the matching SDK image
 sudo docker pull nvcr.io/nvidia/tritonserver:24.07-py3-sdk    # same YY.MM tag as server
 
-# 2. Launch an interactive shell that can reach the running Triton server
+2. Launch an interactive shell that can reach the running Triton server
 sudo docker run --rm -it --net host nvcr.io/nvidia/tritonserver:24.07-py3-sdk bash   # --net host lets it hit localhost:8000/8001
 
 
-# 1 request
+1 request
 sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1 --input-data random --max-threads 256 --async
 
-# 10 requests
+10 requests
 sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
               --concurrency-range 10 --input-data random
 
-# 100 requests
+100 requests
 sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
               --concurrency-range 100 --input-data random
 
-# 1 000 requests
+1000 requests
 perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
               --concurrency-range 1000 --input-data random
 curl -s localhost:8000/v2/models/buffalo_l/versions/1 | jq
@@ -103,7 +103,7 @@ pip install tritonclient[grpc] numpy onnx
 
 
 ****************
-FAISS testing setup
+# FAISS testing setup
 
 mkdir faiss-testing
 python3 -m venv faiss-env
@@ -151,7 +151,7 @@ gunicorn faiss_ms:app -w 1 --threads 8  -k uvicorn.workers.UvicornWorker --bind 
 gunicorn faiss_ms:app -w 1 --threads 8 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:9000 --backlog 2048 --timeout 120 --graceful-timeout 120
 
 **********************
-Locust benchmark setup
+# Locust benchmark setup
 
 mkdir locust_test
 python3 -m venv locust_env
@@ -378,9 +378,11 @@ source calibrate_threshold/bin/activate
 
 python3 -m pip install --upgrade pip
 python3 -m pip install "tritonclient[grpc]" numpy opencv-python insightface onnxruntime
-# if OpenCV GUI error on Ubuntu:
+
+if OpenCV GUI error on Ubuntu:
 sudo apt-get install -y libgl1
   --triton-url "localhost:8001" \
   --target-fmr 0.001 \
   --grid 0.8:1.4:0.005
+
 
