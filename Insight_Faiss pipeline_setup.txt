@@ -1,0 +1,421 @@
+****************************
+
+InsightFace:
+
+mkdir -p ~/triton_test/model_repository/buffalo_l/1
+cd ~/triton_test/model_repository/buffalo_l
+
+model_repository/
+└── buffalo_l/
+    ├── 1/
+    │   └── model.plan          # FP16 TensorRT engine rebuilt with dynamic shapes
+    └── config.pbtxt
+
+wget https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
+unzip buffalo_l.zip
+mv w600k_r50.onnx model.onnx
+
+		
+
+model_repository/buffalo_l/config.pbtxt:
+name: "buffalo_l"
+platform: "tensorrt_plan"
+default_model_filename: "model.plan"
+
+max_batch_size: 32        # enables batching
+
+input [
+  { name:"input.1" data_type:TYPE_FP32 dims:[3,112,112] }
+]
+output [
+  { name:"683"     data_type:TYPE_FP32 dims:[512] }
+]
+
+dynamic_batching {
+  preferred_batch_size: [4, 8, 16]      # Triton will try 4→8→16 images
+  max_queue_delay_microseconds: 1000     # merge window = 1 ms
+}
+
+instance_group [{ kind:KIND_GPU count:16 }]  # keep your 16 streams
+
+
+sudo lsof -i :8000
+sudo kill -9 12080 
+sudo docker ps
+sudo docker stop 31209caf410c
+
+						
+pip install onnx protobuf
+
+
+import onnx
+m = onnx.load("w600k_r50.onnx")
+m.graph.input[0].type.tensor_type.shape.dim[0].dim_param  = "batch"
+m.graph.output[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+onnx.save(m, "w600k_r50_dynamic.onnx")
+
+
+
+cd ~/triton_test/model_repository 
+sudo docker run --rm --gpus all -v $PWD:/workspace  \
+       nvcr.io/nvidia/tensorrt:24.07-py3 bash -c "
+       trtexec \
+         --onnx=/workspace/buffalo_l/1/model_dyn.onnx \
+         --saveEngine=/workspace/buffalo_l/1/model.plan \
+         --minShapes='input.1:1x3x112x112' \
+         --optShapes='input.1:8x3x112x112' \
+         --maxShapes='input.1:32x3x112x112' \
+         --fp16"
+
+
+
+#sudo docker run --gpus all --rm -p8000:8000 -p8001:8001 -v $(pwd)/model_repository:/models  nvcr.io/nvidia/tritonserver:24.07-py3  tritonserver --model-repository=/models
+
+cd ~/triton_test/model_repository          # IMPORTANT: repo root
+sudo docker run --gpus all --net host --shm-size 8g --ipc host --ulimit memlock=-1 --ulimit stack=67108864 -v $PWD:/models nvcr.io/nvidia/tritonserver:24.07-py3 tritonserver --model-repository=/models
+
+
+
+# 1. Pull the matching SDK image
+sudo docker pull nvcr.io/nvidia/tritonserver:24.07-py3-sdk    # same YY.MM tag as server
+
+# 2. Launch an interactive shell that can reach the running Triton server
+sudo docker run --rm -it --net host nvcr.io/nvidia/tritonserver:24.07-py3-sdk bash   # --net host lets it hit localhost:8000/8001
+
+
+# 1 request
+perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1 --input-data random --max-threads 256 --async
+perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 10 --input-data random --max-threads 256 --async
+perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 100 --input-data random --max-threads 256 --async
+perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1000 --input-data random --max-threads 256 --async
+perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 10000 --input-data random --max-threads 256 --async
+
+# 10 requests
+sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
+              --concurrency-range 10 --input-data random
+
+# 100 requests
+sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
+              --concurrency-range 100 --input-data random
+
+# 1 000 requests
+perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
+              --concurrency-range 1000 --input-data random
+curl -s localhost:8000/v2/models/buffalo_l/versions/1 | jq
+
+pip install tritonclient[grpc] numpy onnx
+
+
+import numpy as np
+from tritonclient.grpc import InferenceServerClient, InferInput, InferRequestedOutput
+
+# 🧪 Step 1: Generate random image crops
+# Let's simulate a batch of 8 face crops of shape [3,112,112]
+BATCH_SIZE = 8
+cropped_faces = [np.random.rand(3, 112, 112).astype(np.float32) for _ in range(BATCH_SIZE)]
+
+# Stack into a single input tensor [B, 3, 112, 112]
+crops = np.stack(cropped_faces).astype(np.float32)
+
+# 🛰️ Step 2: Connect to Triton Inference Server
+client = InferenceServerClient(url="localhost:8001")  # Adjust port if needed
+
+# 🧾 Step 3: Prepare input and output descriptors
+input0 = InferInput("input.1", crops.shape, "FP32")   # new name
+input0.set_data_from_numpy(crops)
+
+outputs = [InferRequestedOutput("683")]   # 'output' must match config.pbtxt
+
+# 🚀 Step 4: Perform inference
+response = client.infer(model_name="buffalo_l", inputs=[input0], outputs=outputs)
+
+# 📥 Step 5: Extract embeddings
+embeddings = response.as_numpy("683")  # Shape: [B, 512]
+print("✅ Received embeddings:", embeddings.shape)
+
+
+
+****************
+mkdir faiss-testing
+python3 -m venv faiss-env
+source faiss-env/bin/activate
+
+pip freeze > requirements.txt
+aiohappyeyeballs==2.6.1
+aiohttp==3.12.15
+aiosignal==1.4.0
+annotated-types==0.7.0
+anyio==4.9.0
+async-timeout==5.0.1
+attrs==25.3.0
+certifi==2025.7.14
+charset-normalizer==3.4.2
+click==8.2.2
+exceptiongroup==1.3.0
+faiss-gpu==1.7.2
+fastapi==0.116.1
+frozenlist==1.7.0
+gunicorn==23.0.0
+h11==0.16.0
+idna==3.10
+multidict==6.6.3
+numpy==1.24.4
+packaging==25.0
+propcache==0.3.2
+pydantic==2.11.7
+pydantic_core==2.33.2
+requests==2.32.4
+sniffio==1.3.1
+starlette==0.47.2
+tqdm==4.67.1
+typing-inspection==0.4.1
+typing_extensions==4.14.1
+urllib3==2.5.0
+uvicorn==0.35.0
+yarl==1.20.1
+
+pip install faiss-gpu-cu12[fix-cuda]
+pip install -r requirements.txt
+
+gunicorn faiss_ms:app -w 1 --threads 8  -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:9000
+
+gunicorn faiss_ms:app -w 1 --threads 8 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:9000 --backlog 2048 --timeout 120 --graceful-timeout 120
+
+**********************
+mkdir locust_test
+python3 -m venv locust_env
+source locust_env/bin/activate
+
+sudo apt install -y libgl1 python3-locust
+
+pip install locust tritonclient[grpc] numpy opencv-python requests gdown
+
+GDRIVE_FOLDER_ID="15ZOq_cxQSPRRtzjfI_Zu-oE1YBVe7eeI"  # Replace with your actual shared folder ID
+
+gdown --folder "https://drive.google.com/drive/folders/${GDRIVE_FOLDER_ID}"
+
+unzip voter_images.zip -d voter_images
+
+
+Take code from GitHub
+
+python3 -m locust -f locust_benchmark.py --headless -u 1 -r 1 -t 60s
+python3 -m locust -f locust_benchmark.py --headless -u 10   -r 10   -t 60s
+python3 -m locust -f locust_benchmark.py --headless -u 100   -r 100   -t 60s
+python3 -m locust -f locust_benchmark.py --headless -u 1000   -r 500   -t 120s
+python3 -m locust -f locust_benchmark.py --headless -u 10000   -r 2000   -t 120s 
+python3 -m locust -f locust_benchmark.py --headless -u 10000   -r 2000   -t 120s
+
+python3 -m locust -f locust_benchmark.py --headless --step-load --step-users 1000 --step-time 30s -u 5000 --spawn-rate 500 -t 10m --reset-stats --stop-timeout 30
+
+
+locust -f locustfile.py --headless -u 10   -r 10   -t 60s --csv ten_users
+locust -f locustfile.py --headless -u 100  -r 100  -t 60s --csv hundred_users
+locust -f locustfile.py --headless -u 1000 -r 500  -t 120s --csv thousand_users
+locust -f locustfile.py --headless -u 10000 -r 2000 -t 120s --csv tenk_users
+
+requirements.txt
+
+absl-py==2.3.1
+agate==1.6.3
+agate-dbf==0.2.2
+agate-excel==0.2.5
+agate-sql==0.5.8
+asgiref==3.5.0
+astunparse==1.6.3
+attrs==21.2.0
+auto-sklearn==0.15.0
+Babel==2.8.0
+beautifulsoup4==4.13.4
+blinker==1.4
+Brotli==1.0.9
+certifi==2023.7.22
+chardet==4.0.0
+charset-normalizer==3.2.0
+click==8.1.7
+cloudpickle==2.2.1
+colorama==0.4.4
+command-not-found==0.3
+ConfigArgParse==1.5.3
+ConfigSpace==0.4.21
+contourpy==1.1.1
+cryptography==3.4.8
+csvkit==1.0.6
+cycler==0.11.0
+Cython==0.29.36
+dask==2023.9.0
+dbfread==2.0.7
+dbus-python==1.2.18
+distributed==2023.9.0
+distro==1.7.0
+distro-info===1.1build1
+emcee==3.1.4
+et-xmlfile==1.0.1
+faiss-gpu-cu12==1.11.0
+filelock==3.18.0
+Flask==2.0.1
+Flask-BasicAuth==0.2.0
+flatbuffers==25.2.10
+fonttools==4.42.1
+fsspec==2023.9.0
+gast==0.6.0
+gdown==5.2.0
+gevent==21.8.0
+geventhttpclient==1.5.3
+google-pasta==0.2.0
+greenlet==1.1.2
+grpcio==1.67.1
+gunicorn==20.1.0
+h11==0.13.0
+h2o==3.42.0.3
+h5py==3.14.0
+html5lib==1.1
+httplib2==0.20.2
+idna==3.4
+imbalanced-learn==0.11.0
+importlib-metadata==6.8.0
+iniconfig==1.1.1
+isodate==0.6.1
+itsdangerous==2.1.0
+jdcal==1.0
+jeepney==0.7.1
+Jinja2==3.1.2
+joblib==1.3.2
+keras==3.11.1
+keyring==23.5.0
+kiwisolver==1.4.5
+launchpadlib==1.10.16
+lazr.restfulclient==0.14.4
+lazr.uri==1.0.6
+leather==0.3.4
+liac-arff==2.5.0
+libclang==18.1.1
+locket==1.0.0
+locust==1.4.3
+lxml==4.8.0
+Markdown==3.8.2
+markdown-it-py==3.0.0
+MarkupSafe==2.1.3
+matplotlib==3.8.0
+mdurl==0.1.2
+ml_dtypes==0.5.3
+more-itertools==8.10.0
+msgpack==1.0.5
+namex==0.1.0
+netifaces==0.11.0
+numpy==2.1.3
+nvidia-cublas-cu12==12.5.3.2
+nvidia-cuda-cupti-cu12==12.5.82
+nvidia-cuda-nvcc-cu12==12.5.82
+nvidia-cuda-nvrtc-cu12==12.5.82
+nvidia-cuda-runtime-cu12==12.5.82
+nvidia-cudnn-cu12==9.3.0.75
+nvidia-cufft-cu12==11.2.3.61
+nvidia-curand-cu12==10.3.6.82
+nvidia-cusolver-cu12==11.6.3.83
+nvidia-cusparse-cu12==12.5.1.3
+nvidia-nccl-cu12==2.23.4
+nvidia-nvjitlink-cu12==12.5.82
+oauthlib==3.2.0
+olefile==0.46
+onnx==1.18.0
+opencv-python==4.12.0.88
+openpyxl==3.0.9
+opt_einsum==3.4.0
+optree==0.17.0
+packaging==23.1
+pandas==2.1.0
+parsedatetime==2.6
+partd==1.4.0
+Pillow==10.0.1
+pluggy==0.13.0
+protobuf==5.29.5
+psutil==5.9.5
+py==1.10.0
+Pygments==2.19.2
+PyGObject==3.42.1
+PyICU==2.8.1
+pyinotify==0.9.6
+PyJWT==2.3.0
+pynisher==0.6.4
+pyOpenSSL==21.0.0
+pyparsing==2.4.7
+pyrfr==0.8.3
+PySocks==1.7.1
+pytest==6.2.5
+python-apt==2.4.0+ubuntu1
+python-dateutil==2.8.2
+python-rapidjson==1.21
+python-slugify==4.0.0
+pytimeparse==1.1.5
+pytz==2023.3
+PyYAML==5.4.1
+pyzmq==22.3.0
+requests==2.31.0
+rich==14.1.0
+scikit-learn==1.0.2
+scipy==1.11.2
+seaborn==0.12.2
+SecretStorage==3.3.1
+shapely==2.0.1
+simplejson==3.17.6
+six==1.16.0
+smac==1.2
+sortedcontainers==2.4.0
+soupsieve==2.7
+SQLAlchemy==1.4.31
+systemd-python==234
+tabulate==0.9.0
+tblib==2.0.0
+tensorboard==2.19.0
+tensorboard-data-server==0.7.2
+tensorflow==2.19.0
+tensorflow-io-gcs-filesystem==0.37.1
+termcolor==3.1.0
+threadpoolctl==3.2.0
+toml==0.10.2
+toolz==0.12.0
+tornado==6.3.3
+tqdm==4.67.1
+tritonclient==2.59.0
+typing_extensions==4.7.1
+tzdata==2023.3
+ubuntu-advantage-tools==8001
+ufw==0.36.1
+unattended-upgrades==0.1
+Unidecode==1.3.3
+urllib3==2.5.0
+uvicorn==0.15.0
+wadllib==1.3.6
+webencodings==0.5.1
+Werkzeug==2.0.2
+wrapt==1.17.2
+wsproto==1.0.0
+xlrd==1.2.0
+zict==3.0.0
+zipp==1.0.0
+zope.event==4.4
+zope.interface==5.4.0
+
+pip install -r requirements.txt
+
+***********************
+Calibrate threshhold
+mkdir calibrate_threshold
+python3 -m venv calibrate_threshold
+source calibrate_threshold/bin/activate
+
+python3 -m pip install --upgrade pip
+python3 -m pip install "tritonclient[grpc]" numpy opencv-python insightface onnxruntime
+# if OpenCV GUI error on Ubuntu:
+sudo apt-get install -y libgl1
+
+
+
+
+
+python3 calibrate_threshold.py \
+  --root "/mnt/c/Users/himan/Documents/Image_Train" \
+  --triton-url "localhost:8001" \
+  --target-fmr 0.001 \
+  --grid 0.8:1.4:0.005
