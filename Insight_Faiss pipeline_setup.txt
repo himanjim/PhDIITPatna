@@ -1,6 +1,5 @@
 ****************************
-
-InsightFace:
+InsightFace setup:
 
 mkdir -p ~/triton_test/model_repository/buffalo_l/1
 cd ~/triton_test/model_repository/buffalo_l
@@ -84,11 +83,7 @@ sudo docker run --rm -it --net host nvcr.io/nvidia/tritonserver:24.07-py3-sdk ba
 
 
 # 1 request
-perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1 --input-data random --max-threads 256 --async
-perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 10 --input-data random --max-threads 256 --async
-perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 100 --input-data random --max-threads 256 --async
-perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1000 --input-data random --max-threads 256 --async
-perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 10000 --input-data random --max-threads 256 --async
+sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1 --input-data random --max-threads 256 --async
 
 # 10 requests
 sudo perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 \
@@ -106,36 +101,10 @@ curl -s localhost:8000/v2/models/buffalo_l/versions/1 | jq
 pip install tritonclient[grpc] numpy onnx
 
 
-import numpy as np
-from tritonclient.grpc import InferenceServerClient, InferInput, InferRequestedOutput
-
-# 🧪 Step 1: Generate random image crops
-# Let's simulate a batch of 8 face crops of shape [3,112,112]
-BATCH_SIZE = 8
-cropped_faces = [np.random.rand(3, 112, 112).astype(np.float32) for _ in range(BATCH_SIZE)]
-
-# Stack into a single input tensor [B, 3, 112, 112]
-crops = np.stack(cropped_faces).astype(np.float32)
-
-# 🛰️ Step 2: Connect to Triton Inference Server
-client = InferenceServerClient(url="localhost:8001")  # Adjust port if needed
-
-# 🧾 Step 3: Prepare input and output descriptors
-input0 = InferInput("input.1", crops.shape, "FP32")   # new name
-input0.set_data_from_numpy(crops)
-
-outputs = [InferRequestedOutput("683")]   # 'output' must match config.pbtxt
-
-# 🚀 Step 4: Perform inference
-response = client.infer(model_name="buffalo_l", inputs=[input0], outputs=outputs)
-
-# 📥 Step 5: Extract embeddings
-embeddings = response.as_numpy("683")  # Shape: [B, 512]
-print("✅ Received embeddings:", embeddings.shape)
-
-
 
 ****************
+FAISS testing setup
+
 mkdir faiss-testing
 python3 -m venv faiss-env
 source faiss-env/bin/activate
@@ -182,6 +151,8 @@ gunicorn faiss_ms:app -w 1 --threads 8  -k uvicorn.workers.UvicornWorker --bind 
 gunicorn faiss_ms:app -w 1 --threads 8 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:9000 --backlog 2048 --timeout 120 --graceful-timeout 120
 
 **********************
+Locust benchmark setup
+
 mkdir locust_test
 python3 -m venv locust_env
 source locust_env/bin/activate
@@ -197,7 +168,7 @@ gdown --folder "https://drive.google.com/drive/folders/${GDRIVE_FOLDER_ID}"
 unzip voter_images.zip -d voter_images
 
 
-Take code from GitHub
+Take code from GitHub: https://github.com/himanjim/PhDIITPatna/blob/main/locust_benchmark.py
 
 python3 -m locust -f locust_benchmark.py --headless -u 1 -r 1 -t 60s
 python3 -m locust -f locust_benchmark.py --headless -u 10   -r 10   -t 60s
@@ -409,13 +380,7 @@ python3 -m pip install --upgrade pip
 python3 -m pip install "tritonclient[grpc]" numpy opencv-python insightface onnxruntime
 # if OpenCV GUI error on Ubuntu:
 sudo apt-get install -y libgl1
-
-
-
-
-
-python3 calibrate_threshold.py \
-  --root "/mnt/c/Users/himan/Documents/Image_Train" \
   --triton-url "localhost:8001" \
   --target-fmr 0.001 \
   --grid 0.8:1.4:0.005
+
