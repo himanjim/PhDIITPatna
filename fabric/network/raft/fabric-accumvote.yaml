@@ -1,0 +1,32 @@
+name: fab-election-bench-eci-only
+version: "2.0.0"
+
+caliper:
+  blockchain: fabric
+  sutOptions:
+    mutualTls: false   # keep false for Peer Gateway connector
+
+channels:
+  - channelName: statechan-01
+    contracts:
+      - id: accumvote3
+        version: "1.0"
+        client:
+          organization: ECIMSP
+        # Note: no endorsingOrgs block here – with OR(ECIMSP.peer,OppMSP.peer,CivilMSP.peer),
+        # a single ECI endorsement is sufficient to satisfy the policy.
+
+organizations:
+  - mspid: ECIMSP
+    identities:
+      certificates:
+        - name: eci-admin
+          clientPrivateKey:
+            path: /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp/keystore/priv_sk
+          clientSignedCert:
+            path: /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp/signcerts/Admin@eci.bench.local-cert.pem
+    connectionProfile:
+      path: /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/connection-eci-eci-only.yaml
+      discover: true
+      asLocalhost: false
+

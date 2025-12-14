@@ -1,0 +1,150 @@
+test:
+  name: "accumvote-recordvote-steps"
+  description: "RecordVote at increasing loads using CSV-backed voters/candidates/booths"
+  workers:
+    number: 4
+
+  rounds:
+    - label: recordvote_10
+      description: "About 10 voters (CSV-backed)"
+      txNumber: 10
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 10        # ~10 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV10"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"
+
+    - label: recordvote_100
+      description: "About 100 voters (CSV-backed)"
+      txNumber: 100
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 100       # ~100 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV100"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"
+
+    - label: recordvote_1000
+      description: "About 1000 voters (CSV-backed)"
+      txNumber: 1000
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 1000      # ~1000 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV1000"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"
+
+    # 10k tests
+
+    - label: recordvote_10000_tps2500
+      description: "10k voters at ~2500 TPS"
+      txNumber: 10000
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 2500      # target ~2500 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV10K_2500"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"
+
+    - label: recordvote_10000_tps5000
+      description: "10k voters at ~5000 TPS"
+      txNumber: 10000
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 5000      # target ~5000 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV10K_5000"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"
+
+    # 50k tests
+
+    - label: recordvote_50000_tps5000
+      description: "50k voters at ~5000 TPS"
+      txNumber: 50000
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 5000      # target ~5000 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV50K_5000"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"
+
+    - label: recordvote_50000_tps10000
+      description: "50k voters at ~10000 TPS"
+      txNumber: 50000
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 10000     # target ~10000 TPS
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          contractId:      accumvote2
+          invokerIdentity: eci-admin
+          votersCsv:       "data/voters.csv"
+          candidatesCsv:   "data/candidates.csv"
+          boothsCsv:       "data/booths.csv"
+          serialPrefix:    "RV50K_10000"
+          encOneHex:       "3"
+          attestationSig:  "att-ok"
+          constituencyID:  "C-001"

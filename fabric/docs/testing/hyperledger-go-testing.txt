@@ -1,0 +1,164 @@
+# 1) Install GCC (MSYS2 UCRT64) for cgo / -race
+
+# Install MSYS2 to C:\msys64 (default).
+
+# Open Start → MSYS2 UCRT64 (pick UCRT64, not MSYS or MINGW32/64).
+
+# In that UCRT64 shell, run:
+
+pacman -Syu
+# if asked to restart, close window, reopen "MSYS2 UCRT64" and continue:
+pacman -S --needed base-devel mingw-w64-ucrt-x86_64-gcc
+
+
+# Add to System PATH: C:\msys64\ucrt64\bin
+
+# New PowerShell:
+
+gcc --version
+
+# 2) Enable cgo (for this terminal and persistently)
+
+# Current shell:
+
+$env:CGO_ENABLED = "1"
+
+
+# Persist for future shells (optional):
+
+setx CGO_ENABLED 1
+
+# 3) Install mockgen and put it on PATH
+go install github.com/golang/mock/mockgen@v1.6.0
+# Add %USERPROFILE%\go\bin to your PATH if not already:
+$env:Path += ";$env:USERPROFILE\go\bin"
+mockgen -version
+
+
+# (If mockgen still not found, add %USERPROFILE%\go\bin to your user PATH via System Env Vars and reopen the terminal.)
+
+# 4) Project deps (from your repo root)
+
+# Ensure go.mod has these lines (keep your existing module name):
+
+require (
+    github.com/golang/mock v1.6.0
+    github.com/golang/protobuf v1.5.4
+    github.com/hyperledger/fabric-chaincode-go/v2 v2.3.0
+    github.com/hyperledger/fabric-contract-api-go/v2 v2.2.0
+)
+
+
+# Then sync & vendor:
+
+go mod tidy
+go mod vendor
+
+
+# (If things get out of sync: rmdir /s /q vendor then go mod vendor.)
+
+# 5) Generate mocks (reflect mode)
+
+# Run from the repo root (where go.mod is):
+
+# Mock for TransactionContextInterface
+mockgen -build_flags=-mod=mod -package=main -destination=fakes\mock_txctx_test.go github.com/hyperledger/fabric-contract-api-go/v2/contractapi TransactionContextInterface
+
+# Mock for ChaincodeStubInterface
+mockgen -build_flags=-mod=mod -package=main -destination=fakes\mock_stub_test.go github.com/hyperledger/fabric-chaincode-go/v2/shim ChaincodeStubInterface
+
+
+# (PowerShell uses backtick for line continuation; if you prefer single line, remove the backticks and newlines.)
+
+# Commit the generated files (fakes/mock_*.go) so others don’t need mockgen in CI.
+
+6) Run tests
+
+# All tests:
+
+go clean -testcache
+go test -v -count=1 ./...
+ 
+
+# With race detector:
+
+$env:CGO_ENABLED = "1"
+go test -v -race -count=1 ./...
+
+
+# Targeted runs:
+
+go test -v -count=1 -run Voting
+go test -v -count=1 -run Tally
+go test -v -count=1 -run Publish
+go test -v -count=1 -run VotingCritical
+go test -run TestPublish_HappyPath -v -count=1
+go test -run Test_EndToEnd_InvalidVoter_BioTag_Linkage -v -count=1
+go test -run Test_EndToEnd_InvalidVoter_Excluded_And_BioTag_Linkage -v -count=1
+
+# Mocks with package fakes
+mockgen -build_flags=-mod=mod -package=fakes -destination=fakes\mock_txctx_test.go github.com/hyperledger/fabric-contract-api-go/v2/contractapi TransactionContextInterface
+
+mockgen -build_flags=-mod=mod -package=fakes -destination=fakes\mock_stub_test.go  github.com/hyperledger/fabric-chaincode-go/v2/shim ChaincodeStubInterface
+
+# TESTS performed
+
+Smoke / wiring
+contract_ping_test.go
+•	Test_Chaincode_Constructs — Sanity that contractapi.NewChaincode(new(AccumVoteContract)) builds. Pass = no panic, no error.
+•	Test_Ping_UsesTxID — Ensures Ping() responds and references GetTxID(). Setup: gomock stub returns a fixed TxID. Pass = returns OK: and no error.
+Voting (hot path)
+voting_test.go
+•	TestVoting_PKMissingReject — Reject when no PK::<state> exists. Setup: poll open, no PK. Pass = error mentions “public key”.
+•	TestVoting_PollClosedReject — Reject when poll closed. Setup: set PK, call ClosePoll. Pass = error mentions “closed”.
+•	TestVoting_FirstVotePlusOne — First vote increments one shard for chosen candidate only. Setup: PK+open; cast vote. Pass = exactly one non-identity shard for cand-1; cand-2 stays identity.
+•	TestVoting_SameCandidateRevote_NoOp — Re-voting same candidate does not change accumulator. Pass = same shard key and same value pre/post.
+•	TestVoting_ChangeRevote_MoveBetweenCandidates — Move voter from cand-1→cand-2. Pass = cand-1 shard changes (multiplied by inverse), and cand-2 gains one non-identity shard.
+•	TestVoting_BadEncOne_Reject_NonHex — Reject invalid hex ciphertext. Pass = error mentions hex/parse.
+•	TestVoting_BadEncOne_Reject_OutOfRange — Reject encOne ≤ 1. Pass = error mentions range.
+•	TestVoting_StateOpsBudget_ChangeRevote — Sanity on state operations count for change re-vote. Pass = ≤1 GetPDC/PutPDC and ≤5 GetState/PutState during the second vote.
+voting_critical_test.go (targets the same behaviors + two edge cases)
+•	TestVotingCritical_PKMissingReject — Same as above, explicit PK missing check.
+•	TestVotingCritical_PollClosedReject — Same as above, explicit closed poll check.
+•	TestVotingCritical_FirstVotePlusOne — Same as above.
+•	TestVotingCritical_SameCandidateRevote_NoOp — Same as above.
+•	TestVotingCritical_ChangeRevote_MoveBetweenCandidates — Confirms homomorphic −1/+1 via manual product over shards.
+•	TestVotingCritical_BadEncOne_NonHex — Same as above.
+•	TestVotingCritical_BadEncOne_TooSmall — Same as OutOfRange.
+•	TestVotingCritical_BadEncOne_NonInvertible — Reject encOne = n (not invertible mod n²). Pass = error on gcd != 1.
+•	TestVotingCritical_UnknownCandidate_ValidateOn — With VALIDATE_CANDIDATE=on, reject non-existent candidate. Pass = error mentions candidate.
+•	TestVotingCritical_ShardCollision_Revote — With ACCUM_SHARDS=1 (forced collisions), re-vote still nets out correctly. Pass = cand-1 → identity; cand-2 → non-identity; manual product matches.
+Notes for voting tests
+•	Env in harness: BYPASS_ABAC_FOR_TEST=on, ACCUM_SHARDS=8 (unless overridden), hexN=0xca1, hexG=n+1, hexEncOneGood=0x0bb9 stands in for a valid Enc(1). Identity is 1. Shard selection depends on TxID and voter serial, so tests vary TxID to spread shards.
+Tally (homomorphic combine)
+tally_test.go
+•	TestTally_ZeroVote_Identity — With no votes, per-candidate enc sums are identity (1 mod n²). Pass = both candidates equal 1.
+•	TestTally_SimpleDistribution — 2 votes for cand-1 (on distinct shards), 1 vote for cand-2. Pass = TallyPrepare map equals manual product of shard ciphertexts per candidate.
+•	TestTally_RevoteChange — After moving a voter cand-1→cand-2, TallyPrepare matches manual products, reflecting −1/+1 net.
+•	TestGetEncSums_MirrorsTally — GetEncSums equals TallyPrepare under the same state.
+Publish (finalisation + toy decryption)
+publish_test.go
+•	TestPublish_RequiresClosedPoll — PublishResults must refuse while poll is open. Pass = error mentions “poll must be closed”.
+•	TestPublish_HappyPath — Close poll; publish known plaintext counts and a bundle hash; verify persisted anchor matches returned values. Pass = stored Results and BundleHash match inputs.
+•	TestPublish_Idempotent — Re-publishing the same (round, results, bundle) doesn’t change anything. Pass = identical anchor content across calls.
+•	TestPublish_ConsistencyWithDecryption — Use a small Paillier key (built only in the test), cast 2 votes to cand-1 and 1 to cand-2, decrypt enc sums, publish plaintext, verify published matches decrypted truth.
+•	TestPublish_EndToEnd_DecryptAndVerifyWinner — Full flow with 4 candidates & 4 serials: initial votes + re-votes converge to cand-3 = 4, others 0. Decrypt with toy key, publish plaintext, verify published matches decrypted truth and winner is cand-3.
+Shared test harness highlights
+•	In-memory world state & PDC with op counters, event capture, and gomocked stub/ctx hooks.
+•	Deterministic TxID (overridable) and a fixed Tx timestamp for publish paths.
+•	Helpers to:
+o	Set PK for UP (SetJointPublicKey).
+o	Open/close polls.
+o	Seed candidate list (world state).
+o	Record votes with (serial, constituency, candidate, encOneHex, salt, round, attestationSig).
+o	Compute manual products across shard keys for a candidate.
+o	Parse big-ints from 0x../hex/decimal, padding odd-length hex.
+•	Environment toggles exercised: ACCUM_SHARDS, VALIDATE_CANDIDATE, BYPASS_ABAC_FOR_TEST, etc.
+What these tests collectively guarantee
+•	Correctness of the hot path: first-vote, same-candidate re-vote (idempotent), change re-vote (−1/+1) work by homomorphic multiply/inverse on shard accumulators.
+•	Input hygiene: ciphertext parsing, bounds, and invertibility checks block malformed Enc(1).
+•	Isolation from identity: assertions rely on enc sums and shard products, not plaintext.
+•	Tally soundness: TallyPrepare equals manual shard products; GetEncSums mirrors it exactly.
+•	Publish contract: only after closure; idempotent; persisted anchors match inputs.
+•	Toy end-to-end decryption in tests: confirms that encrypted sums decode to expected counts with a local Paillier key (kept strictly inside tests), giving you a full trace from vote → accumulators → tally → plaintext → published.
+

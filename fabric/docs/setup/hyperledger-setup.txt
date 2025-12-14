@@ -1,0 +1,2738 @@
+sudo apt-get update && sudo apt-get upgrade
+
+sudo apt-get –with-new-pkgs upgrade
+
+Git
+Install the latest version of git
+sudo apt-get install git
+
+cURL
+Install the latest version of cURL
+sudo apt-get install curl
+
+Docker
+Install the latest version of Docker
+sudo apt-get -y install docker-compose
+
+sudo systemctl start docker
+
+sudo apt install nodejs
+sudo apt install npm
+
+
+Download from here: https://go.dev/doc/install
+
+curl -O https://go.dev/dl/go1.25.1.linux-amd64.tar.gz
+Remove previous installation (if it exists)
+rm -rf /usr/local/go
+Extract the archive you just downloaded into /usr/local, creating a fresh Go
+tree in /usr/local/go:
+sudo tar -C /usr/local -xzf go1.19.4.linux-amd64.tar.gz
+Add the following line to .profile file in your home directory.
+PATH=$PATH:/usr/local/go/bin
+(Note : No need to use “export” in the path as in the video.)
+Log out user and log in again.
+Verify the installation by typing the following command :
+go version
+
+sudo usermod -aG docker ubuntu
+
+# 2) Add your login user (looks like 'ubuntu') to the docker group
+sudo usermod -aG docker $USER
+
+# 3) Apply the new group to this shell (saves a full logout/login)
+newgrp docker
+
+# 4) Verify you can talk to the daemon without sudo
+docker info
+
+
+mkdir -p hyperledger
+
+cd hyperledger
+
+curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh && chmod +x install-fabric.sh
+
+./install-fabric.sh -f 3.1.1 d b s
+
+echo 'export PATH="$HOME/hyperledger/fabric-samples/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+###################
+Environment (Ubuntu 22.04 / WSL2)
+# Install Node.js 22 (Caliper 0.7.0 requires Node ≥22, npm ≥11.5)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+nvm install 22 && nvm use 22
+npm i -g npm@^11.5.1
+
+
+Caliper 0.7.0 (local workspace) + Fabric Gateway binding
+# Create a local Caliper workspace
+mkdir -p ~/fab-election-bench/caliper && cd ~/fab-election-bench/caliper
+npm init -y
+
+# (Compatibility pin to avoid js-yaml v4 safeLoad issue in 0.7.0)
+npm pkg set "overrides.js-yaml=3.14.1"
+
+# Install Caliper CLI 0.7.0 and verify
+npm install --save-exact @hyperledger/caliper-cli@0.7.0
+npx caliper --version    # expects: 0.7.0
+
+# Bind Caliper to Hyperledger Fabric via the Gateway SDK (required for Fabric 3.x / SmartBFT)
+npx caliper bind --caliper-bind-sut fabric:fabric-gateway
+*******************
+
+cd ~/hyperledger
+mkdir -p data/scripts data/generated scripts
+
+Create generate_dummy_data.py from GitHub
+
+python3 data/scripts/generate_dummy_data.py --state UP --constituencies 80 --candidates 20 --voters 20000000
+
+
+************************
+
+
+mkdir -p ~/fab-election-bench/stacks/stack-v31-raft && cd ~/fab-election-bench/stacks/stack-v31-raft
+mkdir -p crypto config system-genesis-block
+
+Copy these files from github
+1. crypto-config.yaml → /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/config/crypto-config.yaml
+2. configtx.yaml → /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/config/configtx.yaml
+3. docker-compose.yaml → /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/docker-compose.yaml
+
+
+1) Generate crypto (MSP/TLS) for 5 orderers + 3 orgs
+cd /home/ubuntu/fab-election-bench/stacks/stack-v31-raft
+
+cryptogen generate  --config=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/config/crypto-config.yaml --output=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+2) Create the channel block (no system channel; Participation API)
+
+FABRIC_CFG_PATH=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/config \
+configtxgen \
+  -profile RaftChannel \
+  -outputBlock /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.block \
+  -channelID statechan-01
+
+configtxgen -inspectBlock /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.block | head -n 60
+(sanity check)
+
+
+Docker Install
+mkdir -p ~/.docker/cli-plugins
+curl -SL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$(uname -m) \
+  -o ~/.docker/cli-plugins/docker-compose
+chmod +x ~/.docker/cli-plugins/docker-compose
+
+# verify
+docker compose version
+
+
+# 1) Install Fabric CLIs (includes osnadmin)
+mkdir -p ~/fabric && cd ~/fabric
+curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh
+chmod +x install-fabric.sh
+./install-fabric.sh --fabric-version 3.1.1 binary# Paths
+export STACK=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft
+export CFG=$STACK/config
+export GEN=$STACK/system-genesis-block
+
+mkdir -p "$GEN"
+
+# Create the application channel block (uses your configtx.yaml in $CFG)
+FABRIC_CFG_PATH="$CFG" \
+configtxgen \
+  -profile RaftChannel \
+  -outputBlock "$GEN/statechan-01.v2.block" \
+  -channelID statechan-01
+
+
+# 2) Add to PATH for this shell
+export PATH="$HOME/fabric/fabric-samples/bin:$PATH"
+
+Add hostnames to /etc/hosts
+echo "127.0.0.1 orderer1.eci1.bench.local orderer2.eci2.bench.local orderer3.opp1.bench.local orderer4.opp2.bench.local orderer5.civ1.bench.local" | sudo tee -a /etc/hosts
+
+
+1) Copy the channel block into each orderer container
+for c in orderer1.eci1.bench.local orderer2.eci2.bench.local orderer3.opp1.bench.local orderer4.opp2.bench.local orderer5.civ1.bench.local; do
+  docker cp /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.block $c:/var/hyperledger/statechan-01.block
+done
+
+2) Join all five orderers to statechan-01 (Participation API)
+
+
+
+1) Generate the channel block (V2_0)
+# Paths
+export STACK=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft
+export CFG=$STACK/config
+export GEN=$STACK/system-genesis-block
+
+mkdir -p "$GEN"
+
+# Create the application channel block (uses your configtx.yaml in $CFG)
+FABRIC_CFG_PATH="$CFG" \
+configtxgen \
+  -profile RaftChannel \
+  -outputBlock "$GEN/statechan-01.v2.block" \
+  -channelID statechan-01
+  
+2) Bring up the network
+docker compose -f /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/docker-compose.yaml up -d
+
+# (optional) quick view
+docker ps --format 'table {{.Names}}\t{{.Ports}}' | egrep 'orderer|peer0'
+
+3) Join all 5 orderers to the channel (Participation API)
+# ECI1 (7443)
+osnadmin channel join \
+  -o orderer1.eci1.bench.local:7443 \
+  --channelID statechan-01 \
+  --config-block /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.v2.block \
+  --client-cert /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.crt \
+  --client-key  /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.key \
+  --ca-file     /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt
+
+# ECI2 (8443)
+osnadmin channel join \
+  -o orderer2.eci2.bench.local:8443 \
+  --channelID statechan-01 \
+  --config-block /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.v2.block \
+  --client-cert /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci2.bench.local/users/Admin@eci2.bench.local/tls/client.crt \
+  --client-key  /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci2.bench.local/users/Admin@eci2.bench.local/tls/client.key \
+  --ca-file     /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci2.bench.local/orderers/orderer2.eci2.bench.local/tls/ca.crt
+
+# OPP1 (9443)
+osnadmin channel join \
+  -o orderer3.opp1.bench.local:9443 \
+  --channelID statechan-01 \
+  --config-block /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.v2.block \
+  --client-cert /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/opp1.bench.local/users/Admin@opp1.bench.local/tls/client.crt \
+  --client-key  /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/opp1.bench.local/users/Admin@opp1.bench.local/tls/client.key \
+  --ca-file     /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/opp1.bench.local/orderers/orderer3.opp1.bench.local/tls/ca.crt
+
+# OPP2 (10443)
+osnadmin channel join \
+  -o orderer4.opp2.bench.local:10443 \
+  --channelID statechan-01 \
+  --config-block /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.v2.block \
+  --client-cert /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/opp2.bench.local/users/Admin@opp2.bench.local/tls/client.crt \
+  --client-key  /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/opp2.bench.local/users/Admin@opp2.bench.local/tls/client.key \
+  --ca-file     /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/opp2.bench.local/orderers/orderer4.opp2.bench.local/tls/ca.crt
+
+# CIV1 (11443)
+osnadmin channel join \
+  -o orderer5.civ1.bench.local:11443 \
+  --channelID statechan-01 \
+  --config-block /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/system-genesis-block/statechan-01.v2.block \
+  --client-cert /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/civ1.bench.local/users/Admin@civ1.bench.local/tls/client.crt \
+  --client-key  /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/civ1.bench.local/users/Admin@civ1.bench.local/tls/client.key \
+  --ca-file     /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/civ1.bench.local/orderers/orderer5.civ1.bench.local/tls/ca.crt
+
+
+Verify on each orderer:
+osnadmin channel list -o orderer1.eci1.bench.local:7443  --ca-file $STACK/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt --client-cert $STACK/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.crt --client-key $STACK/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.key
+osnadmin channel list -o orderer2.eci2.bench.local:8443  --ca-file $STACK/crypto/ordererOrganizations/eci2.bench.local/orderers/orderer2.eci2.bench.local/tls/ca.crt --client-cert $STACK/crypto/ordererOrganizations/eci2.bench.local/users/Admin@eci2.bench.local/tls/client.crt --client-key $STACK/crypto/ordererOrganizations/eci2.bench.local/users/Admin@eci2.bench.local/tls/client.key
+osnadmin channel list -o orderer3.opp1.bench.local:9443  --ca-file $STACK/crypto/ordererOrganizations/opp1.bench.local/orderers/orderer3.opp1.bench.local/tls/ca.crt --client-cert $STACK/crypto/ordererOrganizations/opp1.bench.local/users/Admin@opp1.bench.local/tls/client.crt --client-key $STACK/crypto/ordererOrganizations/opp1.bench.local/users/Admin@opp1.bench.local/tls/client.key
+osnadmin channel list -o orderer4.opp2.bench.local:10443 --ca-file $STACK/crypto/ordererOrganizations/opp2.bench.local/orderers/orderer4.opp2.bench.local/tls/ca.crt --client-cert $STACK/crypto/ordererOrganizations/opp2.bench.local/users/Admin@opp2.bench.local/tls/client.crt --client-key $STACK/crypto/ordererOrganizations/opp2.bench.local/users/Admin@opp2.bench.local/tls/client.key
+osnadmin channel list -o orderer5.civ1.bench.local:11443 --ca-file $STACK/crypto/ordererOrganizations/civ1.bench.local/orderers/orderer5.civ1.bench.local/tls/ca.crt --client-cert $STACK/crypto/ordererOrganizations/civ1.bench.local/users/Admin@civ1.bench.local/tls/client.crt --client-key $STACK/crypto/ordererOrganizations/civ1.bench.local/users/Admin@civ1.bench.local/tls/client.key
+
+
+
+4) Join all 3 peers to the channel
+# Copy block
+docker cp $GEN/statechan-01.v2.block peer0.eci.bench.local:/var/hyperledger/statechan-01.v2.block
+docker cp $GEN/statechan-01.v2.block peer0.opp.bench.local:/var/hyperledger/statechan-01.v2.block
+docker cp $GEN/statechan-01.v2.block peer0.civil.bench.local:/var/hyperledger/statechan-01.v2.block
+
+# Join (ECI)
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/var/hyperledger/admin-msp \
+  peer0.eci.bench.local \
+  peer channel join -b /var/hyperledger/statechan-01.v2.block
+
+# Join (OPP)
+docker exec \
+  -e CORE_PEER_LOCALMSPID=OppMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/var/hyperledger/admin-msp \
+  peer0.opp.bench.local \
+  peer channel join -b /var/hyperledger/statechan-01.v2.block
+
+# Join (CIVIL)
+docker exec \
+  -e CORE_PEER_LOCALMSPID=CivilMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/var/hyperledger/admin-msp \
+  peer0.civil.bench.local \
+  peer channel join -b /var/hyperledger/statechan-01.v2.block
+
+Verify on peers:
+docker exec peer0.eci.bench.local   peer channel list
+docker exec peer0.opp.bench.local   peer channel list
+docker exec peer0.civil.bench.local peer channel list
+
+# (optional) basic height check
+docker exec peer0.eci.bench.local   peer channel getinfo -c statechan-01
+docker exec peer0.opp.bench.local   peer channel getinfo -c statechan-01
+docker exec peer0.civil.bench.local peer channel getinfo -c statechan-01
+
+
+
+5) How to restart Fabric after a machine reboot
+# 1) Start Docker (ensure Docker Desktop / daemon is running for WSL2)
+
+# 2) Bring containers back up (they’ll reuse persisted ledgers/volumes)
+docker compose -f /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/docker-compose.yaml up -d
+
+# 3) Quick health check
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | egrep 'orderer|peer0'
+
+# 4) Add/refresh host mappings
+# remove any old bench.local lines then append fresh ones
+sudo sed -i '/eci1\.bench\.local/d;/eci2\.bench\.local/d;/opp1\.bench\.local/d;/opp2\.bench\.local/d;/civ1\.bench\.local/d' /etc/hosts
+sudo tee -a /etc/hosts >/dev/null <<'EOF'
+127.0.0.1 orderer1.eci1.bench.local
+127.0.0.1 orderer2.eci2.bench.local
+127.0.0.1 orderer3.opp1.bench.local
+127.0.0.1 orderer4.opp2.bench.local
+127.0.0.1 orderer5.civ1.bench.local
+EOF
+
+# sanity check
+getent hosts orderer1.eci1.bench.local orderer2.eci2.bench.local \
+             orderer3.opp1.bench.local orderer4.opp2.bench.local \
+             orderer5.civ1.bench.local
+
+
+# 5) Verify orderers still see the channel (should be "active")
+export STACK=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft
+
+# ECI1
+osnadmin channel list -o orderer1.eci1.bench.local:7443 \
+  --ca-file     $STACK/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt \
+  --client-cert $STACK/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.crt \
+  --client-key  $STACK/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.key
+
+# ECI2
+osnadmin channel list -o orderer2.eci2.bench.local:8443 \
+  --ca-file     $STACK/crypto/ordererOrganizations/eci2.bench.local/orderers/orderer2.eci2.bench.local/tls/ca.crt \
+  --client-cert $STACK/crypto/ordererOrganizations/eci2.bench.local/users/Admin@eci2.bench.local/tls/client.crt \
+  --client-key  $STACK/crypto/ordererOrganizations/eci2.bench.local/users/Admin@eci2.bench.local/tls/client.key
+
+# OPP1
+osnadmin channel list -o orderer3.opp1.bench.local:9443 \
+  --ca-file     $STACK/crypto/ordererOrganizations/opp1.bench.local/orderers/orderer3.opp1.bench.local/tls/ca.crt \
+  --client-cert $STACK/crypto/ordererOrganizations/opp1.bench.local/users/Admin@opp1.bench.local/tls/client.crt \
+  --client-key  $STACK/crypto/ordererOrganizations/opp1.bench.local/users/Admin@opp1.bench.local/tls/client.key
+
+# OPP2
+osnadmin channel list -o orderer4.opp2.bench.local:10443 \
+  --ca-file     $STACK/crypto/ordererOrganizations/opp2.bench.local/orderers/orderer4.opp2.bench.local/tls/ca.crt \
+  --client-cert $STACK/crypto/ordererOrganizations/opp2.bench.local/users/Admin@opp2.bench.local/tls/client.crt \
+  --client-key  $STACK/crypto/ordererOrganizations/opp2.bench.local/users/Admin@opp2.bench.local/tls/client.key
+
+# CIV1
+osnadmin channel list -o orderer5.civ1.bench.local:11443 \
+  --ca-file     $STACK/crypto/ordererOrganizations/civ1.bench.local/orderers/orderer5.civ1.bench.local/tls/ca.crt \
+  --client-cert $STACK/crypto/ordererOrganizations/civ1.bench.local/users/Admin@civ1.bench.local/tls/client.crt \
+  --client-key  $STACK/crypto/ordererOrganizations/civ1.bench.local/users/Admin@civ1.bench.local/tls/client.key
+
+
+# 5) Verify peers still on channel
+docker exec peer0.eci.bench.local   peer channel list
+docker exec peer0.opp.bench.local   peer channel list
+docker exec peer0.civil.bench.local peer channel list
+
+#WINDOWS WSL PATH
+\\wsl$\Ubuntu\home\ubuntu
+
+
+
+#START Configure MSP: Generate your real MSP/TLS from YOUR project config (inside container)
+
+# 1) From repo root
+cd ~/fab-election-bench
+
+# 2) Show the exact file cryptogen will read (double-check it’s the one you edited)
+readlink -f stacks/stack-v31-raft/config/crypto-config.yaml
+
+# 3) Remove any old output so you can see a clean tree get created
+rm -rf stacks/stack-v31-raft/crypto
+
+# 4) Run cryptogen *in the container*, mounting your whole repo at /work
+docker run --rm -v "$PWD":/work -w /work hyperledger/fabric-tools:2.5 \
+  cryptogen generate \
+    --config=stacks/stack-v31-raft/config/crypto-config.yaml \
+    --output=stacks/stack-v31-raft/crypto
+
+# 5) Verify BOTH orderer and peer orgs got generated
+echo "=== orderer orgs ==="
+find stacks/stack-v31-raft/crypto/ordererOrganizations -maxdepth 2 -type d | sort || echo "MISSING ordererOrganizations/"
+echo "=== peer orgs ==="
+find stacks/stack-v31-raft/crypto/peerOrganizations -maxdepth 2 -type d | sort || echo "MISSING peerOrganizations/"
+
+
+#END Configure MSP
+
+# Bring up orderers & peers
+cd ~/fab-election-bench
+docker compose -f stacks/stack-v31-raft/docker-compose.yaml up -d
+
+# quick view
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | sed -n '1,20p'
+
+# Create channel block (profile RaftChannel from your configtx.yaml)
+export FABRIC_CFG_PATH=$PWD/stacks/stack-v31-raft/config
+mkdir -p stacks/stack-v31-raft/channel-artifacts
+
+configtxgen -profile RaftChannel \
+  -channelID statechan-01 \
+  -outputBlock stacks/stack-v31-raft/channel-artifacts/statechan-01.block
+  
+  
+#Fix ownership & perms (run from repo root)
+cd ~/fab-election-bench
+
+# See current owner (you’ll likely see root)
+ls -l stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.key
+
+# Take ownership of all generated crypto
+sudo chown -R "$(id -u)":"$(id -g)" stacks/stack-v31-raft/crypto
+
+# Lock down permissions (owner read/write; no group/world)
+chmod -R u+rwX,go-rwx stacks/stack-v31-raft/crypto
+
+# Verify now owned by your user
+ls -l stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/users/Admin@eci1.bench.local/tls/client.key
+
+
+
+# Join all 5 orderers via Participation API
+
+#Create certificate bundle
+
+B=stacks/stack-v31-raft/channel-artifacts/orderer-admin-tlscas.bundle.pem
+CR=stacks/stack-v31-raft/crypto/ordererOrganizations
+
+cat \
+  $CR/eci1.bench.local/tlsca/tlsca.eci1.bench.local-cert.pem \
+  $CR/eci2.bench.local/tlsca/tlsca.eci2.bench.local-cert.pem \
+  $CR/opp1.bench.local/tlsca/tlsca.opp1.bench.local-cert.pem \
+  $CR/opp2.bench.local/tlsca/tlsca.opp2.bench.local-cert.pem \
+  $CR/civ1.bench.local/tlsca/tlsca.civ1.bench.local-cert.pem \
+  > "$B"
+
+# (Optional) sanity
+grep -c "BEGIN CERTIFICATE" "$B"   # expect: 5
+
+
+
+
+# Apply & verify
+cd ~/fab-election-bench
+
+# Make sure the bundle exists and has 5 certs
+B=stacks/stack-v31-raft/channel-artifacts/orderer-admin-tlscas.bundle.pem
+grep -c "BEGIN CERTIFICATE" "$B"   # should print 5
+
+# Recreate orderers with override
+docker compose -f stacks/stack-v31-raft/docker-compose.yaml \
+               -f stacks/stack-v31-raft/docker-compose.override.yaml up -d \
+  orderer1.eci1.bench.local orderer2.eci2.bench.local \
+  orderer3.opp1.bench.local orderer4.opp2.bench.local orderer5.civ1.bench.local
+
+# Sanity: the path inside containers is correct
+docker exec orderer1.eci1.bench.local ls -l /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+
+# Tail logs; you should no longer see “Failed to load ServerRootCAs file”
+docker logs --tail=100 orderer1.eci1.bench.local | egrep -i 'cluster|raft|rootca|error' || true
+
+
+# Join peers to the channel (one peer per org)
+
+cd ~/fab-election-bench
+
+# --- Common inputs
+BLK="$PWD/stacks/stack-v31-raft/channel-artifacts/statechan-01.block"
+ORDERER_TLS_CA="$PWD/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt"
+
+# helper to push files + join with Admin MSP
+join_peer () {
+  local P="$1"         # peer container name
+  local ORG="$2"       # org DNS under peerOrganizations (eci.bench.local | opp.bench.local | civil.bench.local)
+
+  echo "==> $P"
+  docker cp "$BLK" "$P":/tmp/statechan-01.block
+  docker cp "$ORDERER_TLS_CA" "$P":/tmp/orderer1-tls-ca.crt
+
+  # fresh Admin MSP staging
+  docker exec "$P" sh -lc 'rm -rf /tmp/admin-msp'
+  docker cp "$PWD/stacks/stack-v31-raft/crypto/peerOrganizations/$ORG/users/Admin@$ORG/msp/." "$P":/tmp/admin-msp
+
+  # join once, then verify
+  docker exec "$P" sh -lc '
+    set -e
+    export CORE_PEER_MSPCONFIGPATH=/tmp/admin-msp
+    export CORE_PEER_TLS_ENABLED=true
+    export CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt
+
+    peer channel list | grep -qx statechan-01 || \
+    peer channel join -b /tmp/statechan-01.block \
+      --orderer orderer1.eci1.bench.local:7050 \
+      --tls --cafile /tmp/orderer1-tls-ca.crt
+
+    echo "--- post-join ($HOSTNAME) ---"
+    peer channel list
+    peer channel getinfo -c statechan-01 || true
+  '
+}
+
+# Run for each peer (safe to repeat)
+join_peer peer0.eci.bench.local   eci.bench.local
+join_peer peer0.opp.bench.local   opp.bench.local
+join_peer peer0.civil.bench.local civil.bench.local
+
+
+
+docker ps --format '{{.Names}}' | grep -E '^peer0\.'   # shows the real peer names
+
+
+#% #%#%#%#%===== START Anchor peers for ECIMSP, OppMSP, CivilMSP (safe script)
+
+# ----- 0) Vars
+cd ~/fab-election-bench
+ROOT=$PWD/stacks/stack-v31-raft
+CH=statechan-01
+ORDERER_ADDR=orderer1.eci1.bench.local:7050
+ORDERER_CA="$ROOT/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt"
+
+# MSP -> peer container
+declare -A PEER=(
+  [ECIMSP]=peer0.eci.bench.local
+  [OppMSP]=peer0.opp.bench.local
+  [CivilMSP]=peer0.civil.bench.local
+)
+
+# MSP -> org admin MSP path
+declare -A ADMINMSP=(
+  [ECIMSP]="$ROOT/crypto/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp"
+  [OppMSP]="$ROOT/crypto/peerOrganizations/opp.bench.local/users/Admin@opp.bench.local/msp"
+  [CivilMSP]="$ROOT/crypto/peerOrganizations/civil.bench.local/users/Admin@civil.bench.local/msp"
+)
+
+# MSP -> desired anchor host + port (adjust if your ports differ)
+declare -A HOSTPORT=(
+  [ECIMSP]="peer0.eci.bench.local 7051"
+  [OppMSP]="peer0.opp.bench.local 8051"
+  [CivilMSP]="peer0.civil.bench.local 9051"
+)
+
+# ----- 1) Put orderer TLS CA + Admin MSP into each peer container
+for MSP in ECIMSP OppMSP CivilMSP; do
+  docker cp "$ORDERER_CA"            "${PEER[$MSP]}":/tmp/orderer1-tls-ca.crt
+  docker cp "${ADMINMSP[$MSP]}"      "${PEER[$MSP]}":/tmp/admin-msp
+done
+
+# ----- 2) Fetch the current channel config block ONCE (using ECIMSP admin)
+docker exec "${PEER[ECIMSP]}" sh -lc '
+  set -eu
+  export CORE_PEER_MSPCONFIGPATH=/tmp/admin-msp
+  peer channel fetch config /tmp/ch_cfg.pb \
+    -c '"$CH"' -o '"$ORDERER_ADDR"' --tls --cafile /tmp/orderer1-tls-ca.crt \
+    >/tmp/fetch.out 2>/tmp/fetch.err || true
+  tail -n 10 /tmp/fetch.err /tmp/fetch.out 2>/dev/null || true
+'
+docker cp "${PEER[ECIMSP]}":/tmp/ch_cfg.pb /tmp/ch_cfg.pb
+
+# Decode to JSON (host side), then re-encode to a Config proto
+configtxlator proto_decode --type common.Block --input /tmp/ch_cfg.pb \
+  | jq '.data.data[0].payload.data.config' >/tmp/ch_config.json
+configtxlator proto_encode --type common.Config --input /tmp/ch_config.json \
+  --output /tmp/ch_config.pb
+
+# ----- 3) For each MSP: build delta tx that sets AnchorPeers, then apply it signed by that org admin
+for MSP in ECIMSP OppMSP CivilMSP; do
+  read HOST PORT <<< "${HOSTPORT[$MSP]}"
+  echo "==> Building anchor update for $MSP -> $HOST:$PORT"
+
+  # Make a modified JSON with the AnchorPeers value set for this MSP
+  jq --arg ORG "$MSP" --arg HOST "$HOST" --argjson PORT "$PORT" '
+    .channel_group.groups.Application.groups[$ORG].values.AnchorPeers
+    = {"mod_policy":"Admins","value":{"anchor_peers":[{"host":$HOST,"port":$PORT}]},"version":"0"}
+  ' /tmp/ch_config.json >/tmp/${MSP}_modified.json
+
+  # Compute the update, wrap into Envelope, encode tx
+  configtxlator proto_encode --type common.Config --input /tmp/${MSP}_modified.json \
+    --output /tmp/${MSP}_modified.pb
+  configtxlator compute_update --channel_id "$CH" \
+    --original /tmp/ch_config.pb --updated /tmp/${MSP}_modified.pb > /tmp/${MSP}_update.pb
+  configtxlator proto_decode --type common.ConfigUpdate --input /tmp/${MSP}_update.pb \
+    >/tmp/${MSP}_update.json
+
+  echo '{"payload":{"header":{"channel_header":{"channel_id":"'"$CH"'","type":2}},"data":{"config_update":'"$(cat /tmp/${MSP}_update.json)"'}}}' \
+    | jq . >/tmp/${MSP}_anchors_envelope.json
+
+  configtxlator proto_encode --type common.Envelope \
+    --input /tmp/${MSP}_anchors_envelope.json \
+    --output /tmp/${MSP}_anchors.tx
+
+  # If there are no diffs, skip cleanly
+  if [ ! -s /tmp/${MSP}_update.pb ] || jq -e '.read_set == .write_set' /tmp/${MSP}_update.json >/dev/null 2>&1; then
+    echo "   (no differences for $MSP — already set?)"
+    continue
+  fi
+
+  # Apply the update via that org's peer, signed by that org's Admin
+  docker cp /tmp/${MSP}_anchors.tx "${PEER[$MSP]}":/tmp/anchors.tx
+  docker exec "${PEER[$MSP]}" sh -lc '
+    set -eu
+    export CORE_PEER_MSPCONFIGPATH=/tmp/admin-msp
+    peer channel update -f /tmp/anchors.tx -c '"$CH"' -o '"$ORDERER_ADDR"' \
+      --tls --cafile /tmp/orderer1-tls-ca.crt \
+      >/tmp/update.out 2>/tmp/update.err || true
+    tail -n 20 /tmp/update.err /tmp/update.out 2>/dev/null || true
+  '
+done
+
+# ----- 4) Verify on the host (decode the latest config and print all three AnchorPeers)
+docker exec "${PEER[ECIMSP]}" sh -lc '
+  export CORE_PEER_MSPCONFIGPATH=/tmp/admin-msp
+  peer channel fetch config /tmp/verify.pb -c '"$CH"' -o '"$ORDERER_ADDR"' \
+    --tls --cafile /tmp/orderer1-tls-ca.crt >/dev/null 2>/dev/null || true
+'
+docker cp "${PEER[ECIMSP]}":/tmp/verify.pb /tmp/verify.pb
+configtxlator proto_decode --type common.Block --input /tmp/verify.pb >/tmp/verify.json
+
+echo "==> ECIMSP anchors"
+jq '.data.data[0].payload.data.config.channel_group.groups.Application.groups.ECIMSP.values.AnchorPeers.value.anchor_peers' /tmp/verify.json
+echo "==> OppMSP anchors"
+jq '.data.data[0].payload.data.config.channel_group.groups.Application.groups.OppMSP.values.AnchorPeers.value.anchor_peers' /tmp/verify.json
+echo "==> CivilMSP anchors"
+jq '.data.data[0].payload.data.config.channel_group.groups.Application.groups.CivilMSP.values.AnchorPeers.value.anchor_peers' /tmp/verify.json
+
+
+
+#% #%#%#%#%===== END Anchor peers for ECIMSP, OppMSP, CivilMSP (safe script)
+
+#% #%#%#%#%===== START Reproduce “approve → commit” for the paper =====
+# 1.1 Host shell: set common env
+# channel + orderer you’ll use for submits
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD_PORT=7050
+export ORD=$ORD_HOST:$ORD_PORT
+
+# chaincode
+export NAME=evote-preload
+export VERSION=1.0
+export SEQ=1
+export LABEL=${NAME}_${VERSION}
+
+#Get package IDs (must match across orgs)
+# ECI
+export PKG_ECI=$(docker exec peer0.eci.bench.local bash -lc \
+  "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \([^,]*\), Label: ${LABEL}/\1/p'")
+# OPP
+export PKG_OPP=$(docker exec peer0.opp.bench.local bash -lc \
+  "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \([^,]*\), Label: ${LABEL}/\1/p'")
+# CIVIL
+export PKG_CIV=$(docker exec peer0.civil.bench.local bash -lc \
+  "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \([^,]*\), Label: ${LABEL}/\1/p'")
+
+echo "ECI  : $PKG_ECI"
+echo "OPP  : $PKG_OPP"
+echo "CIVIL: $PKG_CIV"
+
+# Approve from each org
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+    peer lifecycle chaincode approveformyorg \
+      --channelID $CHAN --name $NAME --version $VERSION --sequence $SEQ \
+      --orderer $ORD --tls --cafile /opt/orderer-ca.pem \
+      --ordererTLSHostnameOverride $ORD_HOST \
+      --package-id $PKG_ECI \
+      --collections-config /tmp/collections-voter-roll.json
+  "
+
+docker exec \
+  -e CORE_PEER_LOCALMSPID=OppMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.opp.bench.local:8051 \
+  peer0.opp.bench.local bash -lc "
+    peer lifecycle chaincode approveformyorg \
+      --channelID $CHAN --name $NAME --version $VERSION --sequence $SEQ \
+      --orderer $ORD --tls --cafile /opt/orderer-ca.pem \
+      --ordererTLSHostnameOverride $ORD_HOST \
+      --package-id $PKG_OPP \
+      --collections-config /tmp/collections-voter-roll.json
+  "
+
+docker exec \
+  -e CORE_PEER_LOCALMSPID=CivilMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.civil.bench.local:9051 \
+  peer0.civil.bench.local bash -lc "
+    peer lifecycle chaincode approveformyorg \
+      --channelID $CHAN --name $NAME --version $VERSION --sequence $SEQ \
+      --orderer $ORD --tls --cafile /opt/orderer-ca.pem \
+      --ordererTLSHostnameOverride $ORD_HOST \
+      --package-id $PKG_CIV \
+      --collections-config /tmp/collections-voter-roll.json
+  "
+
+# Check readiness (should show all true)
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+    peer lifecycle chaincode checkcommitreadiness \
+      --channelID $CHAN --name $NAME --version $VERSION --sequence $SEQ \
+      --output json --collections-config /tmp/collections-voter-roll.json
+  "
+# Commit the definition (collect ECI + OPP endorsements)
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+    peer lifecycle chaincode commit \
+      --channelID $CHAN --name $NAME --version $VERSION --sequence $SEQ \
+      --orderer $ORD --tls --cafile /opt/orderer-ca.pem \
+      --ordererTLSHostnameOverride $ORD_HOST \
+      --collections-config /tmp/collections-voter-roll.json \
+      --peerAddresses peer0.eci.bench.local:7051   --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+      --peerAddresses peer0.opp.bench.local:8051   --tlsRootCertFiles /opt/OppMSP-peer-ca.pem
+  "
+
+# Verify committed definition
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+    peer lifecycle chaincode querycommitted --channelID $CHAN --name $NAME
+  "
+
+
+
+#% #%#%#%#%===== END Reproduce “approve → commit” for the paper =====
+
+
+
+
+
+#% #%#%#%#%===== START Insert candidates dummy data =====
+# Set once (host)
+# === CONSTANTS (adjust once) ===
+export CHAN="statechan-01"
+export CC="evote-preload"
+export ORD="orderer1.eci1.bench.local:7050"
+export PEER_CLI="peer0.eci.bench.local"
+
+# Input CSVs (host paths)
+export CAND_CSV="/home/ubuntu/hyperledger/data/generated/candidates.csv"
+export VOTER_CSV="/home/ubuntu/hyperledger/data/generated/voters.csv"
+
+# TLS files must already exist inside the ECI peer container at these paths:
+# /opt/orderer-ca.pem  /var/hyperledger/tls/ca.crt  /opt/OppMSP-peer-ca.pem  /opt/CivilMSP-peer-ca.pem
+
+# Quick health before loading:
+docker exec "$PEER_CLI" bash -lc '
+  set -e
+  echo "peer:" $(peer version | head -n1)
+  for f in /opt/orderer-ca.pem /var/hyperledger/tls/ca.crt /opt/OppMSP-peer-ca.pem /opt/CivilMSP-peer-ca.pem; do
+    [[ -f "$f" ]] || { echo "MISSING $f" >&2; exit 12; }
+  done
+  peer channel getinfo -c '"$CHAN"' -o '"$ORD"' --tls --cafile /opt/orderer-ca.pem
+  peer lifecycle chaincode querycommitted -C '"$CHAN"' | grep -F '"$CC"'
+'
+
+# Load Candidates (public state via UpsertCandidates)
+# Build CID list from CSV col1 (skips header)
+cut -d, -f1 "$CAND_CSV" | sed '1d' | sort -u > /tmp/cand.const.list
+
+while read -r CID; do
+  echo ">> Upserting candidates for $CID"
+  CID="$CID" CAND_CSV="$CAND_CSV" python3 - <<'PY' >"/tmp/cand.${CID}.json"
+import csv, json, os
+csv_path = os.environ["CAND_CSV"]; cid=os.environ["CID"]
+out=[]
+with open(csv_path, newline="") as f:
+    r=csv.DictReader(f)
+    for row in r:
+        if row.get("constituency_id","").strip()==cid:
+            out.append({
+              "candidate_id": row["candidate_id"].strip(),
+              "candidate_name": row["candidate_name"].strip(),
+              "party_code": row["party_code"].strip(),
+              "symbol_hash": row["symbol_hash"].strip()
+            })
+print(json.dumps({"Args":["UpsertCandidates", cid, json.dumps(out,separators=(",",":"))]},separators=(",",":")))
+PY
+
+  docker cp "/tmp/cand.${CID}.json" "$PEER_CLI:/tmp/cand.${CID}.json"
+
+  docker exec -e CORE_PEER_LOCALMSPID=ECIMSP \
+             -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+             -e CORE_PEER_TLS_ENABLED=true \
+             -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+             -e CORE_PEER_ADDRESS="$PEER_CLI:7051" \
+             "$PEER_CLI" bash -lc '
+    set -e
+    peer chaincode invoke -C '"$CHAN"' -n '"$CC"' -o '"$ORD"' --tls --cafile /opt/orderer-ca.pem \
+      --peerAddresses '"$PEER_CLI"':7051        --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+      --peerAddresses peer0.opp.bench.local:8051   --tlsRootCertFiles /opt/OppMSP-peer-ca.pem \
+      --peerAddresses peer0.civil.bench.local:9051 --tlsRootCertFiles /opt/CivilMSP-peer-ca.pem \
+      --waitForEvent \
+      -c "$(cat /tmp/cand.'"$CID"'.json)"
+  '
+done < /tmp/cand.const.list
+
+# verification example
+docker exec "$PEER_CLI" bash -lc \
+  'peer chaincode query -C '"$CHAN"' -n '"$CC"' -c "{\"Args\":[\"GetCandidateList\",\"C-001\"]}" && echo'
+
+
+
+#% #%#%#%#%===== END Insert candidates dummy data =====
+
+#% #%#%#%#%===== START Configuration for inserting voters dummy data =====
+
+#Re-chunk CSV on HOST at CHUNK_N=800
+# paths
+export VOTER_CSV="/home/ubuntu/hyperledger/data/generated/voters_1M.csv"
+export OUTDIR="/tmp/voters_chunks_n800"
+export CHUNK_N=800
+
+rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
+
+python3 - <<'PY'
+import os, csv, json, base64
+from pathlib import Path
+CSV=os.environ["VOTER_CSV"]; OUT=Path(os.environ["OUTDIR"]); N=int(os.environ["CHUNK_N"])
+buf={}
+def flush(key):
+    items, idx = buf[key]
+    if not items: return
+    state,cid=key
+    d=OUT/state/cid; d.mkdir(parents=True, exist_ok=True)
+    data=json.dumps(items,separators=(',',':')).encode()
+    d.joinpath(f"entries_{idx:06d}.b64").write_bytes(base64.b64encode(data))
+    buf[key]=([],idx+1)
+with open(CSV,newline="") as f:
+    r=csv.DictReader(f)
+    for row in r:
+        state=(row.get("state_code") or "").strip()
+        cid  =(row.get("constituency_id") or "").strip()
+        vid  =(row.get("voter_id_star") or "").strip()
+        st   =(row.get("status") or "eligible").strip()
+        if not (state and cid and vid): continue
+        k=(state,cid)
+        if k not in buf: buf[k]=([],1)
+        buf[k][0].append({"voter_id_star":vid,"status":st})
+        if len(buf[k][0])>=N: flush(k)
+for k in list(buf.keys()): flush(k)
+total=sum(1 for _ in OUT.rglob("entries_*.b64"))
+print(f"OK wrote {total} chunks to {OUT}")
+PY
+
+# sanity: verify max base64 size is comfortably < 100k
+python3 - <<'PY'
+import os, pathlib
+OUT=pathlib.Path(os.environ["OUTDIR"])
+mx=max((p.stat().st_size for p in OUT.rglob("entries_*.b64")), default=0)
+print("largest_b64_size_bytes=", mx)
+PY
+
+
+# Copy to the ECI peer:
+docker exec peer0.eci.bench.local sh -lc 'rm -rf /tmp/voters_chunks_n800 && mkdir -p /tmp/voters_chunks_n800'
+docker cp "$OUTDIR/." peer0.eci.bench.local:/tmp/voters_chunks_n800
+docker exec peer0.eci.bench.local bash -lc '
+mx=$(find /tmp/voters_chunks_n800 -type f -name "entries_*.b64" -printf "%s\n" | sort -n | tail -1);
+echo "peer: largest_b64_size_bytes=$mx"'
+
+# Build 4 shards inside the peer (modulo by constituency number)
+docker exec peer0.eci.bench.local bash -lc '
+set -euo pipefail
+SRC=/tmp/voters_chunks_n800
+BASE=/tmp/voters_shard
+SHARDS=4
+for i in $(seq 1 "$SHARDS"); do rm -rf ${BASE}_$i; mkdir -p ${BASE}_$i; done
+while IFS= read -r -d "" d; do
+  rel="${d#"$SRC/"}"; state="${rel%%/*}"; cid="${rel##*/}"
+  num=$(printf "%s\n" "$cid" | sed -n "s/[^0-9]*\([0-9]\+\).*/\1/p"); [ -n "$num" ] || continue
+  shard=$(( (10#$num % SHARDS) + 1 ))
+  mkdir -p ${BASE}_$shard/"$state"
+  cp -r "$d" ${BASE}_$shard/"$state"/
+done < <(find "$SRC" -mindepth 2 -maxdepth 2 -type d -print0)
+for i in $(seq 1 "$SHARDS"); do
+  echo "${BASE}_$i: $(find ${BASE}_$i -type f -name "entries_*.b64" | wc -l) chunks"
+done
+'
+
+# The loader script
+cat > /tmp/load_voters_seq_v2p.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Expected env from caller:
+#   ROOT        = root directory of shard (e.g. /tmp/voters_shard_1)
+#   LOG_PREFIX  = short label (e.g. sh1, sh2, ...)
+#   CHAN        = channel name (e.g. statechan-01)
+#   CC          = chaincode name (evote-preload)
+#   ORD         = orderer address (orderer1.eci1.bench.local:7050)
+#   MAX_RETRY   = max retries per chunk (default 3)
+#   SLEEP_BASE  = base sleep between retries (default 1s)
+
+ROOT="${ROOT:-/tmp/voters_shard_1}"
+LOG_PREFIX="${LOG_PREFIX:-voters}"
+CHAN="${CHAN:-statechan-01}"
+CC="${CC:-evote-preload}"
+ORD="${ORD:-orderer1.eci1.bench.local:7050}"
+MAX_RETRY="${MAX_RETRY:-3}"
+SLEEP_BASE="${SLEEP_BASE:-1}"
+
+OK_LOG=/tmp/invoke_seq.${LOG_PREFIX}.ok
+FAIL_LOG=/tmp/invoke_seq.${LOG_PREFIX}.fail
+OUT_LOG=/tmp/invoke_seq.${LOG_PREFIX}.out
+
+rm -f "$OK_LOG" "$FAIL_LOG" "$OUT_LOG"
+
+# Walk all b64 chunks under ROOT, sorted for reproducibility
+find "$ROOT" -type f -name "entries_*.b64" | sort | while read -r f; do
+  rel="${f#"$ROOT/"}"
+  state="$(echo "$rel" | cut -d/ -f1)"
+  cid="$(echo "$rel" | cut -d/ -f2)"
+
+  # File already contains base64(JSON array); strip newlines
+  b64="$(tr -d $'\n\r' < "$f")"
+
+  attempt=1
+  while :; do
+    echo "[$LOG_PREFIX] $(date -Is) state=$state cid=$cid file=$f (try $attempt)" | tee -a "$OUT_LOG"
+
+    # Correct contract function: PutVoterRollChunk(stateCode, constituencyID, entriesJSON string)
+    # Preferred input is transient key "entries" containing the raw JSON array bytes (base64-encoded on CLI).
+    if peer chaincode invoke \
+      -C "$CHAN" \
+      -n "$CC" \
+      -o "$ORD" --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride orderer1.eci1.bench.local \
+      --peerAddresses peer0.eci.bench.local:7051 --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+      -c "{\"Args\":[\"PutVoterRollChunk\",\"$state\",\"$cid\",\"\"]}" \
+      --transient "{\"entries\":\"$b64\"}" \
+      --waitForEvent \
+      2>&1 | tee -a "$OUT_LOG"
+    then
+      echo "$f" >>"$OK_LOG"
+      break
+    else
+      rc=${PIPESTATUS[0]}
+      echo "[$LOG_PREFIX]   failed rc=$rc" | tee -a "$OUT_LOG"
+    fi
+
+    if [ "$attempt" -ge "$MAX_RETRY" ]; then
+      echo "$f" >>"$FAIL_LOG"
+      break
+    fi
+
+    sleep "$((SLEEP_BASE * attempt))"
+    attempt=$((attempt+1))
+  done
+done
+EOF
+
+chmod +x /tmp/load_voters_seq_v2p.sh
+
+docker cp /tmp/load_voters_seq_v2p.sh \
+  peer0.eci.bench.local:/opt/load_voters_seq_v2p.sh
+
+docker exec -u root peer0.eci.bench.local \
+  chmod +x /opt/load_voters_seq_v2p.sh
+
+
+# Run four sequential loaders (one per terminal)
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  peer0.eci.bench.local bash -lc \
+ 'ROOT=/tmp/voters_shard_1 LOG_PREFIX=sh1 \
+  CHAN=statechan-01 CC=evote-preload ORD=orderer1.eci1.bench.local:7050 \
+  MAX_RETRY=3 SLEEP_BASE=1 /opt/load_voters_seq_v2p.sh'
+# shard 2
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  peer0.eci.bench.local bash -lc \
+ 'ROOT=/tmp/voters_shard_2 LOG_PREFIX=sh2 \
+  CHAN=statechan-01 CC=evote-preload ORD=orderer1.eci1.bench.local:7050 \
+  MAX_RETRY=3 SLEEP_BASE=1 /opt/load_voters_seq_v2p.sh'
+
+# shard 3
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  peer0.eci.bench.local bash -lc \
+ 'ROOT=/tmp/voters_shard_3 LOG_PREFIX=sh3 \
+  CHAN=statechan-01 CC=evote-preload ORD=orderer1.eci1.bench.local:7050 \
+  MAX_RETRY=3 SLEEP_BASE=1 /opt/load_voters_seq_v2p.sh'
+
+# shard 4
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  peer0.eci.bench.local bash -lc \
+ 'ROOT=/tmp/voters_shard_4 LOG_PREFIX=sh4 \
+  CHAN=statechan-01 CC=evote-preload ORD=orderer1.eci1.bench.local:7050 \
+  MAX_RETRY=3 SLEEP_BASE=1 /opt/load_voters_seq_v2p.sh'
+
+# Quick monitor (run in a fifth terminal)
+for i in 1 2 3 4; do
+  echo "== shard $i ==";
+  docker exec peer0.eci.bench.local bash -lc '
+    total=$(find /tmp/voters_shard_'"$i"' -type f -name "entries_*.b64" | wc -l || echo 0)
+    ok=$(wc -l </tmp/invoke_seq.sh'"$i"'.ok 2>/dev/null || echo 0)
+    fail=$(wc -l </tmp/invoke_seq.sh'"$i"'.fail 2>/dev/null || echo 0)
+    done=$((ok+fail))
+    printf "total=%d done=%d ok=%d fail=%d (%.2f%%)\n" "$total" "$done" "$ok" "$fail" "$(awk "BEGIN{if($total>0) print 100*$done/$total; else print 0}")"
+  '
+done
+
+# If a voter key exists in the PDC
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc \
+'peer chaincode query \
+   -C statechan-01 -n evote-preload \
+   -c "{\"Args\":[\"HasVoter\",\"C-001\",\"dfda95487a545816fee960bb\"]}"'
+
+
+#% #%#%#%#%===== END Configuration for inserting voters dummy data =====
+
+
+
+#% #%#%#%#%===== Quick sanity check after reopening a terminal =====
+docker ps --format 'table {{.Names}}\t{{.Status}}'
+
+# Or for specific containers:
+for c in orderer1.eci1.bench.local orderer2.eci2.bench.local orderer3.opp1.bench.local \
+         orderer4.opp2.bench.local orderer5.civ1.bench.local \
+         peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker inspect -f '{{.Name}}  {{.State.Status}}' "$c" || true
+done
+
+
+#%#%#%#%#%#%#%#%
+
+
+#% #%#%#%#%===== START create booth level dummy data =====
+#Python: generate 170,000 compact booth rows for UP (C-001…C-080)
+
+# Get booth_pdc_compact_up.py from gitHUb
+
+python3 booth_pdc_compact_up.py
+wc -l /tmp/booth_pdc_compact.csv    # expect 170001 (header + 170000)
+head -n 5 /tmp/booth_pdc_compact.csv
+
+#% #%#%#%#%===== END booth level dummy data =====
+
+set -euo pipefail
+
+# --- Vars (edit only if you change names/versions) ---
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD=${ORD_HOST}:7050
+export CC_NAME=boothpdc
+export CC_VERSION=1.0
+export CC_LABEL=${CC_NAME}_${CC_VERSION}
+export CC_PATH=~/fab-election-bench/chaincode/boothpdc
+export CRYPTO=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+# --- Sanity (host) ---
+peer version | head -n1
+go version
+
+# --- Prepare chaincode module (host; ensures vendor for offline builds) ---
+cd "$CC_PATH"
+mkdir -p .fabriccfg
+printf "peer:\n  logging:\n    level: info\n" > .fabriccfg/core.yaml
+export FABRIC_CFG_PATH=$PWD/.fabriccfg
+
+# Must import v2 in your code:
+#   "github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
+export GOPROXY=https://proxy.golang.org,direct
+go mod tidy
+go mod vendor
+go build ./...  # optional compile check
+
+# --- Package (host) ---
+peer lifecycle chaincode package /tmp/${CC_LABEL}.tgz \
+  --lang golang --label ${CC_LABEL} --path "$CC_PATH"
+
+cp -f /tmp/${CC_LABEL}.tgz ~/fab-election-bench/${CC_LABEL}.tgz
+ls -lh ~/fab-election-bench/${CC_LABEL}.tgz
+
+# --- Collections (host -> peers) ---
+cat > /tmp/collections-booth.json <<'JSON'
+[
+  {
+    "name": "booth_pdc",
+    "policy": "OR('ECIMSP.member','OppMSP.member','CivilMSP.member')",
+    "requiredPeerCount": 0,
+    "maxPeerCount": 1,
+    "memberOnlyRead": true,
+    "blockToLive": 0
+  }
+]
+JSON
+
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp /tmp/collections-booth.json "$P:/tmp/collections-booth.json"
+done
+
+# --- Ensure Admin MSPs are mounted inside each peer (host -> peers) ---
+# (Needed so lifecycle commands pass the [Admins] ACL.)
+docker exec -u root peer0.eci.bench.local   bash -lc 'rm -rf /opt/admin-msp'
+docker exec -u root peer0.opp.bench.local   bash -lc 'rm -rf /opt/admin-msp'
+docker exec -u root peer0.civil.bench.local bash -lc 'rm -rf /opt/admin-msp'
+
+docker cp "$CRYPTO/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp/."     peer0.eci.bench.local:/opt/admin-msp
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/users/Admin@opp.bench.local/msp/."     peer0.opp.bench.local:/opt/admin-msp
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/users/Admin@civil.bench.local/msp/." peer0.civil.bench.local:/opt/admin-msp
+
+# --- Cross-peer TLS roots (copy ONLY to the invoker peer: ECI) ---
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/peers/peer0.opp.bench.local/tls/ca.crt"   peer0.eci.bench.local:/opt/OppMSP-peer-ca.pem
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/peers/peer0.civil.bench.local/tls/ca.crt" peer0.eci.bench.local:/opt/CivilMSP-peer-ca.pem
+
+# (Assumes you already copied the orderer CA earlier to /opt/orderer-ca.pem on all peers.)
+
+# --- Distribute package to peers (host -> peers) ---
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp ~/fab-election-bench/${CC_LABEL}.tgz "$P:/tmp/${CC_LABEL}.tgz"
+done
+
+# --- Install on each peer (run as Admin MSP) ---
+install_cc () {
+  local P=$1 MSP=$2 ADDR=$3
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "peer lifecycle chaincode install /tmp/${CC_LABEL}.tgz || true"
+}
+install_cc peer0.eci.bench.local   ECIMSP     peer0.eci.bench.local:7051
+install_cc peer0.opp.bench.local   OppMSP     peer0.opp.bench.local:8051
+install_cc peer0.civil.bench.local CivilMSP   peer0.civil.bench.local:9051
+
+# --- Capture Package IDs (as Admin) ---
+PKG_ECI=$(docker exec -e CORE_PEER_LOCALMSPID=ECIMSP  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.eci.bench.local   bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+PKG_OPP=$(docker exec -e CORE_PEER_LOCALMSPID=OppMSP  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.opp.bench.local   bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+PKG_CIV=$(docker exec -e CORE_PEER_LOCALMSPID=CivilMSP -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.civil.bench.local bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+echo "PKG_ECI=$PKG_ECI"
+echo "PKG_OPP=$PKG_OPP"
+echo "PKG_CIV=$PKG_CIV"
+
+# --- Approve on all orgs (sequence=1) ---
+approve_cc () {
+  local P=$1 MSP=$2 ADDR=$3 PKGID=$4
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "
+peer lifecycle chaincode approveformyorg \
+  --channelID ${CHAN} --name ${CC_NAME} --version ${CC_VERSION} --sequence 1 \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --package-id ${PKGID} \
+  --collections-config /tmp/collections-booth.json"
+"
+}
+approve_cc peer0.eci.bench.local   ECIMSP     peer0.eci.bench.local:7051   "$PKG_ECI"
+approve_cc peer0.opp.bench.local   OppMSP     peer0.opp.bench.local:8051   "$PKG_OPP"
+approve_cc peer0.civil.bench.local CivilMSP   peer0.civil.bench.local:9051 "$PKG_CIV"
+
+# --- (Optional) readiness check ---
+docker exec -e CORE_PEER_LOCALMSPID=ECIMSP -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.eci.bench.local bash -lc \
+"peer lifecycle chaincode checkcommitreadiness \
+   --channelID ${CHAN} --name ${CC_NAME} --version ${CC_VERSION} --sequence 1 \
+   --output json --collections-config /tmp/collections-booth.json"
+
+# --- Commit (collect ECI + OPP endorsements) ---
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode commit \
+  --channelID ${CHAN} --name ${CC_NAME} --version ${CC_VERSION} --sequence 1 \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --collections-config /tmp/collections-booth.json \
+  --peerAddresses peer0.eci.bench.local:7051  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  --peerAddresses peer0.opp.bench.local:8051  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem
+"
+
+# --- Verify committed definition ---
+docker exec peer0.eci.bench.local \
+  peer lifecycle chaincode querycommitted --channelID ${CHAN} --name ${CC_NAME}
+
+# --- Smoke test (transient PDC write + presence check) ---
+docker exec peer0.eci.bench.local bash -lc '
+set -euo pipefail
+STATE=UP; CID=C-001
+ENT=$(cat <<JSON
+[
+  {"state_code":"UP","constituency_id":"C-001","booth_id":"B-0001","status":"A",
+   "open_time":1763173800,"close_time":1763206200,
+   "officer_id":"c92e2a33e47584670fb8a160","officer_role":"P",
+   "device_id":"D0010001000","device_key_fingerprint":"5eeea7e7483b89aa2b79a8050747cff9"}
+]
+JSON
+)
+TR=$(printf "{\"entries\":\"%s\"}" "$(printf %s "$ENT" | base64 -w0)")
+peer chaincode invoke -C '"$CHAN"' -n '"$CC_NAME"' \
+  -o '"$ORD"' --tls --cafile /opt/orderer-ca.pem \
+  --peerAddresses peer0.eci.bench.local:7051 --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  --peerAddresses peer0.opp.bench.local:8051 --tlsRootCertFiles /opt/OppMSP-peer-ca.pem \
+  --waitForEvent --transient "$TR" \
+  -c "{\"Args\":[\"PutBoothChunk\",\"$STATE\",\"$CID\"]}"
+peer chaincode query -C '"$CHAN"' -n '"$CC_NAME"' \
+  -c '\''{"Args":["HasBooth","UP","C-001","B-0001"]}'\''
+'
+
+
+#% #%#%#%#%===== START Booth PDC chaincode — reproducible commands (host + docker exec) =====
+
+
+
+#% #%#%#%#%===== END Booth PDC chaincode — reproducible commands (host + docker exec) =====
+
+
+#% #%#%#%#%===== START Configuration for inserting booth dummy data =====
+# 1. Chunk the booth CSV on the host
+# --- paths & knobs (host) ---
+export BOOTH_CSV="/home/ubuntu/hyperledger/data/generated/booth_pdc_compact.csv"
+export OUTDIR="/tmp/booth_chunks_n600"
+export CHUNK_N=200          # keep base64 payload < ~95k to avoid "arg list too long"
+
+rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
+
+python3 - <<'PY'
+import os, csv, json, base64
+from pathlib import Path
+CSV = os.environ["BOOTH_CSV"]
+OUT = Path(os.environ["OUTDIR"])
+N   = int(os.environ["CHUNK_N"])
+
+buf = {}   # key: (state,cid) -> [items, idx]
+
+def flush(k):
+    items, idx = buf[k]
+    if not items: return
+    state, cid = k
+    d = OUT/state/cid
+    d.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(items, separators=(',',':')).encode()
+    (d / f"entries_{idx:06d}.b64").write_bytes(base64.b64encode(data))
+    buf[k] = ([], idx+1)
+
+with open(CSV, newline="") as f:
+    r = csv.DictReader(f)
+    for row in r:
+        state  = (row.get("state_code") or "").strip()
+        cid    = (row.get("constituency_id") or "").strip()
+        bid    = (row.get("booth_id") or "").strip()
+        status = (row.get("status") or "A").strip()
+        ot     = row.get("open_time")
+        ct     = row.get("close_time")
+        oid    = (row.get("officer_id") or "").strip()
+        orole  = (row.get("officer_role") or "").strip()
+        did    = (row.get("device_id") or "").strip()
+        fpr    = (row.get("device_key_fingerprint") or "").strip()
+        if not (state and cid and bid):
+            continue
+        rec = {
+          "state_code": state, "constituency_id": cid, "booth_id": bid, "status": status,
+          "open_time": int(ot) if (isinstance(ot,str) and ot.isdigit()) else ot,
+          "close_time": int(ct) if (isinstance(ct,str) and ct.isdigit()) else ct,
+          "officer_id": oid, "officer_role": orole,
+          "device_id": did, "device_key_fingerprint": fpr
+        }
+        k = (state, cid)
+        if k not in buf: buf[k] = ([], 1)
+        buf[k][0].append(rec)
+        if len(buf[k][0]) >= N:
+            flush(k)
+
+for k in list(buf.keys()):
+    flush(k)
+
+total = sum(1 for _ in OUT.rglob("entries_*.b64"))
+print(f"OK wrote {total} chunks to {OUT}")
+PY
+
+# quick size sanity (host) — includes import os to avoid NameError
+python3 - <<'PY'
+import os
+from pathlib import Path
+OUT = Path(os.environ["OUTDIR"])
+mx = max((p.stat().st_size for p in OUT.rglob("entries_*.b64")), default=0)
+print("largest_b64_size_bytes=", mx)
+PY
+
+# 2 Install a verbose one-chunk probe inside ECI
+
+docker exec -i peer0.eci.bench.local bash -lc 'cat > /opt/load_booths_seq.sh << "BASH"
+#!/usr/bin/env bash
+# Sequential booth loader: walks ROOT, finds entries_*.b64, and invokes PutBoothChunk.
+# Uses simple retry with backoff and writes logs into /tmp/invoke_seq.<LOG_PREFIX>.{ok,fail,out}
+set -euo pipefail
+
+ROOT="${ROOT:-/tmp/booth_shard_1}"
+CHAN="${CHAN:-statechan-01}"
+CC="${CC:-boothpdc}"
+ORD="${ORD:-orderer1.eci1.bench.local:7050}"
+MAX_RETRY="${MAX_RETRY:-3}"
+SLEEP_BASE="${SLEEP_BASE:-1}"
+LOG_PREFIX="${LOG_PREFIX:-booth}"
+
+OK_DIR="/tmp/invoke_seq.${LOG_PREFIX}.ok"
+FAIL_DIR="/tmp/invoke_seq.${LOG_PREFIX}.fail"
+OUT_DIR="/tmp/invoke_seq.${LOG_PREFIX}.out"
+
+mkdir -p "$OK_DIR" "$FAIL_DIR" "$OUT_DIR"
+
+echo "ROOT=$ROOT  CHAN=$CHAN  CC=$CC  ORD=$ORD"
+echo "MAX_RETRY=$MAX_RETRY  SLEEP_BASE=$SLEEP_BASE"
+echo "ENV: CORE_PEER_LOCALMSPID=${CORE_PEER_LOCALMSPID:-unset}"
+echo "ENV: CORE_PEER_MSPCONFIGPATH=${CORE_PEER_MSPCONFIGPATH:-unset}"
+echo "ENV: CORE_PEER_TLS_ENABLED=${CORE_PEER_TLS_ENABLED:-unset}"
+echo "ENV: CORE_PEER_TLS_ROOTCERT_FILE=${CORE_PEER_TLS_ROOTCERT_FILE:-unset}"
+
+# Collect files deterministically
+mapfile -t FILES < <(find "$ROOT" -type f -name "entries_*.b64" | sort || true)
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "No entries_*.b64 found under $ROOT"
+  exit 1
+fi
+
+for F in "${FILES[@]}"; do
+  D="$(dirname "$F")"
+  CID="$(basename "$D")"
+  STATE="$(basename "$(dirname "$D")")"
+  BASE="$(basename "$F")"
+  OUT="${OUT_DIR}/${BASE}.log"
+
+  echo "----"
+  echo "Processing $F (STATE=$STATE CID=$CID)"
+
+  # transient + payload
+  TRANS="$(printf "{\"entries\":\"%s\"}" "$(tr -d "\n" < "$F")")"
+  PAYLOAD="$(printf "{\"Args\":[\"PutBoothChunk\",\"%s\",\"%s\"]}" "$STATE" "$CID")"
+
+  ATTEMPT=1
+  while :; do
+    echo "Invoke attempt $ATTEMPT for $F"
+    set +e
+    peer chaincode invoke -C "$CHAN" -n "$CC" \
+      -o "$ORD" --tls --cafile /opt/orderer-ca.pem \
+      --peerAddresses peer0.eci.bench.local:7051  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+      --peerAddresses peer0.opp.bench.local:8051  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem \
+      --waitForEvent --transient "$TRANS" \
+      -c "$PAYLOAD" >"$OUT" 2>&1
+    RC=$?
+    set -e
+
+    if [ $RC -eq 0 ]; then
+      echo "OK: $F"
+      mv "$OUT" "${OK_DIR}/${BASE}.log"
+      break
+    fi
+
+    echo "FAIL rc=$RC for $F (attempt $ATTEMPT)"
+    if [ $ATTEMPT -ge $MAX_RETRY ]; then
+      echo "Giving up on $F after $ATTEMPT attempts"
+      mv "$OUT" "${FAIL_DIR}/${BASE}.log"
+      break
+    fi
+
+    SLEEP_SEC=$((SLEEP_BASE * ATTEMPT))
+    echo "Retrying after ${SLEEP_SEC}s..."
+    sleep "$SLEEP_SEC"
+    ATTEMPT=$((ATTEMPT+1))
+  done
+done
+
+echo "load_booths_seq.sh DONE for ROOT=$ROOT"
+exit 0
+BASH
+chmod +x /opt/load_booths_seq.sh'
+
+
+# 3 Run four loaders (one per terminal)
+# shard 1
+docker exec -e CORE_PEER_LOCALMSPID=ECIMSP \
+           -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+           -e CORE_PEER_TLS_ENABLED=true \
+           -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+           peer0.eci.bench.local bash -lc \
+'ROOT=/tmp/booth_shard_1 LOG_PREFIX=sh1 \
+ CHAN=statechan-01 CC=boothpdc ORD=orderer1.eci1.bench.local:7050 \
+ MAX_RETRY=3 SLEEP_BASE=1 /opt/load_booths_seq.sh'
+
+# shard 2
+docker exec -e CORE_PEER_LOCALMSPID=ECIMSP \
+           -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+           -e CORE_PEER_TLS_ENABLED=true \
+           -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+           peer0.eci.bench.local bash -lc \
+'ROOT=/tmp/booth_shard_2 LOG_PREFIX=sh2 \
+ CHAN=statechan-01 CC=boothpdc ORD=orderer1.eci1.bench.local:7050 \
+ MAX_RETRY=3 SLEEP_BASE=1 /opt/load_booths_seq.sh'
+
+# shard 3
+docker exec -e CORE_PEER_LOCALMSPID=ECIMSP \
+           -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+           -e CORE_PEER_TLS_ENABLED=true \
+           -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+           peer0.eci.bench.local bash -lc \
+'ROOT=/tmp/booth_shard_3 LOG_PREFIX=sh3 \
+ CHAN=statechan-01 CC=boothpdc ORD=orderer1.eci1.bench.local:7050 \
+ MAX_RETRY=3 SLEEP_BASE=1 /opt/load_booths_seq.sh'
+
+# shard 4
+docker exec -e CORE_PEER_LOCALMSPID=ECIMSP \
+           -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+           -e CORE_PEER_TLS_ENABLED=true \
+           -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+           peer0.eci.bench.local bash -lc \
+'ROOT=/tmp/booth_shard_4 LOG_PREFIX=sh4 \
+ CHAN=statechan-01 CC=boothpdc ORD=orderer1.eci1.bench.local:7050 \
+ MAX_RETRY=3 SLEEP_BASE=1 /opt/load_booths_seq.sh'
+
+
+# 4 Monitor progress (fifth terminal)
+
+for i in 1 2 3 4; do
+  echo "== shard $i ==";
+  docker exec peer0.eci.bench.local bash -lc '
+    total=$(find /tmp/booth_shard_'"$i"' -type f -name "entries_*.b64" | wc -l || echo 0)
+    ok=$(wc -l </tmp/invoke_seq.sh'"$i"'.ok 2>/dev/null || echo 0)
+    fail=$(wc -l </tmp/invoke_seq.sh'"$i"'.fail 2>/dev/null || echo 0)
+    done=$((ok+fail))
+    pct=$(awk "BEGIN{ if($total>0){printf \"%.2f\",100*$done/$total}else{printf \"0\"}}")
+    echo "total=$total done=$done ok=$ok fail=$fail ($pct%)"
+  '
+done
+
+# 5 Spot check a booth key
+docker exec peer0.eci.bench.local \
+  peer chaincode query -C statechan-01 -n boothpdc \
+  -c '{"Args":["HasBooth","UP","C-001","B-0001"]}'
+
+
+
+
+#% #%#%#%#%===== END Configuration for inserting booth dummy data =====
+
+#% #%#%#%#%===== START Committing the accumvote_cc chaincode=====
+
+# 1. Host: env + sanity
+# --- ENV COMMONS ---
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD=${ORD_HOST}:7050
+
+export CC_NAME=accumvote
+export CC_VERSION=1.0
+export CC_LABEL=${CC_NAME}_${CC_VERSION}
+export CC_PATH=~/fab-election-bench/chaincode/accumvote_cc
+export CRYPTO=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+# Quick sanity checks
+peer version | head -n1
+go version
+
+
+# Make sure CC_PATH exists and contains your contract.go:
+ls -la "$CC_PATH"
+
+# 2. Host: build & vendor the Go module
+
+cd "$CC_PATH"
+
+mkdir -p .fabriccfg
+printf "peer:\n  logging:\n    level: info\n" > .fabriccfg/core.yaml
+export FABRIC_CFG_PATH=$PWD/.fabriccfg
+
+# Use v2 contract API: "github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
+export GOPROXY=https://proxy.golang.org,direct
+
+go mod tidy
+go mod vendor
+
+# Optional compile sanity (good to catch typos before packaging)
+go build ./...
+
+
+# 3. Host: package the chaincode
+peer lifecycle chaincode package /tmp/${CC_LABEL}.tgz \
+  --lang golang --label ${CC_LABEL} --path "$CC_PATH"
+
+cp -f /tmp/${CC_LABEL}.tgz ~/fab-election-bench/${CC_LABEL}.tgz
+ls -lh ~/fab-election-bench/${CC_LABEL}.tgz
+
+
+# 4. Host: define the votes_pdc collection and copy to peers
+cat > /tmp/collections-votes.json <<'JSON'
+[
+  {
+    "name": "votes_pdc",
+    "policy": "OR('ECIMSP.member','OppMSP.member','CivilMSP.member')",
+    "requiredPeerCount": 0,
+    "maxPeerCount": 1,
+    "memberOnlyRead": true,
+    "blockToLive": 0
+  }
+]
+JSON
+
+# Copy into all three peers:
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp /tmp/collections-votes.json "$P:/tmp/collections-votes.json"
+done
+
+# 5. Host → peers: refresh /opt/admin-msp and TLS roots
+# Clean any old admin-msp
+docker exec -u root peer0.eci.bench.local   bash -lc 'rm -rf /opt/admin-msp'
+docker exec -u root peer0.opp.bench.local   bash -lc 'rm -rf /opt/admin-msp'
+docker exec -u root peer0.civil.bench.local bash -lc 'rm -rf /opt/admin-msp'
+
+# Copy Admin MSPs
+docker cp "$CRYPTO/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp/."     peer0.eci.bench.local:/opt/admin-msp
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/users/Admin@opp.bench.local/msp/."     peer0.opp.bench.local:/opt/admin-msp
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/users/Admin@civil.bench.local/msp/." peer0.civil.bench.local:/opt/admin-msp
+
+# Cross-peer TLS roots on ECI (for multi-endorser commits/invokes):
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/peers/peer0.opp.bench.local/tls/ca.crt"     peer0.eci.bench.local:/opt/OppMSP-peer-ca.pem
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/peers/peer0.civil.bench.local/tls/ca.crt" peer0.eci.bench.local:/opt/CivilMSP-peer-ca.pem
+
+# 6. Host → peers: distribute the package
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp ~/fab-election-bench/${CC_LABEL}.tgz "$P:/tmp/${CC_LABEL}.tgz"
+done
+
+
+# 7. Peers: install accumvote on all orgs
+install_cc () {
+  local P=$1 MSP=$2 ADDR=$3
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "peer lifecycle chaincode install /tmp/${CC_LABEL}.tgz || true"
+}
+
+install_cc peer0.eci.bench.local   ECIMSP     peer0.eci.bench.local:7051
+install_cc peer0.opp.bench.local   OppMSP     peer0.opp.bench.local:8051
+install_cc peer0.civil.bench.local CivilMSP   peer0.civil.bench.local:9051
+
+# 8. Peers: capture Package IDs
+PKG_ECI=$(docker exec -e CORE_PEER_LOCALMSPID=ECIMSP  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.eci.bench.local   bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+PKG_OPP=$(docker exec -e CORE_PEER_LOCALMSPID=OppMSP  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.opp.bench.local   bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+PKG_CIV=$(docker exec -e CORE_PEER_LOCALMSPID=CivilMSP -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.civil.bench.local bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+
+echo "PKG_ECI=$PKG_ECI"
+echo "PKG_OPP=$PKG_OPP"
+echo "PKG_CIV=$PKG_CIV"
+
+# 9. Peers: approve accumvote for each org (sequence 1)
+approve_cc () {
+  local P=$1 MSP=$2 ADDR=$3 PKGID=$4
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "
+peer lifecycle chaincode approveformyorg \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence 1 \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --package-id ${PKGID} \
+  --signature-policy \"AND('ECIMSP.peer','OppMSP.peer')\" \
+  --collections-config /tmp/collections-votes.json
+"
+}
+
+approve_cc peer0.eci.bench.local   ECIMSP     peer0.eci.bench.local:7051   "$PKG_ECI"
+approve_cc peer0.opp.bench.local   OppMSP     peer0.opp.bench.local:8051   "$PKG_OPP"
+approve_cc peer0.civil.bench.local CivilMSP   peer0.civil.bench.local:9051 "$PKG_CIV"
+
+
+# 10. Optional: checkcommitreadiness
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.eci.bench.local bash -lc \
+"peer lifecycle chaincode checkcommitreadiness \
+   --channelID ${CHAN} \
+   --name ${CC_NAME} \
+   --version ${CC_VERSION} \
+   --sequence 1 \
+   --signature-policy \"AND('ECIMSP.peer','OppMSP.peer')\" \
+   --collections-config /tmp/collections-votes.json \
+   --output json"
+
+# 11 Commit
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode commit \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence 1 \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --collections-config /tmp/collections-votes.json \
+  --signature-policy \"AND('ECIMSP.peer','OppMSP.peer')\" \
+  \
+  --peerAddresses peer0.eci.bench.local:7051 \
+  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  \
+  --peerAddresses peer0.opp.bench.local:8051 \
+  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem
+"
+
+
+#Confirm
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.eci.bench.local bash -lc \
+"peer lifecycle chaincode querycommitted --channelID ${CHAN} --name ${CC_NAME}"
+
+#% #%#%#%#%===== END Committing the accumvote_cc chaincode=====
+
+
+#% #%#%#%#%===== START Redeploy accumvote as v1.1 (sequence 3)=====
+# 1.1 Replace resolveStateForReader completely
+
+# Current version (what you have now, simplified):
+
+func resolveStateForReader(ctx contractapi.TransactionContextInterface) (string, error) {
+    if strings.ToLower(os.Getenv("BYPASS_ABAC_FOR_TEST")) == "on" {
+        if s := os.Getenv("BYPASS_STATE"); s != "" {
+            return s, nil
+        }
+        return "TEST", nil
+    }
+    id, err := cid.New(ctx.GetStub())
+    if err != nil {
+        return "", fmt.Errorf("cid: %w", err)
+    }
+    state, ok, _ := id.GetAttributeValue("state")
+    if !ok || state == "" {
+        return "", errors.New("missing state attribute")
+    }
+    return state, nil
+}
+
+
+# Replace the entire function with:
+
+func resolveStateForReader(ctx contractapi.TransactionContextInterface) (string, error) {
+	// Bench/test build:
+	// Always treat the caller as belonging to state "UP" and bypass ABAC.
+	// For a production deployment, restore state-based checks using client identity attributes.
+	return "UP", nil
+}
+
+# 1.2 Replace requireABAC completely
+
+# Current version (from your file):
+
+func requireABAC(ctx contractapi.TransactionContextInterface, constituencyID string) (string, error) {
+    // Test-only bypass: if BYPASS_ABAC_FOR_TEST=on, skip attribute checks.
+    // Returns BYPASS_STATE if set, else "TEST".
+    if strings.ToLower(os.Getenv("BYPASS_ABAC_FOR_TEST")) == "on" {
+        if s := os.Getenv("BYPASS_STATE"); s != "" {
+            return s, nil
+        }
+        return "TEST", nil
+    }
+
+    id, err := cid.New(ctx.GetStub())
+    if err != nil {
+        return "", fmt.Errorf("cid: %w", err)
+    }
+    role, ok, _ := id.GetAttributeValue("role")
+    if !ok || role != "voterMachine" {
+        return "", errors.New("caller role must be voterMachine")
+    }
+    stateAttr, ok, _ := id.GetAttributeValue("state")
+    if !ok || stateAttr == "" {
+        return "", errors.New("missing state attribute")
+    }
+    constAttr, ok, _ := id.GetAttributeValue("constituency")
+    if !ok || constAttr == "" || constAttr != constituencyID {
+        return "", errors.New("constituency attribute mismatch")
+    }
+    return stateAttr, nil
+}
+
+
+# Replace the entire function with:
+
+func requireABAC(ctx contractapi.TransactionContextInterface, constituencyID string) (string, error) {
+	// Bench/test build:
+	// Fully bypass ABAC and hard-code state "UP".
+	// For a production deployment, enforce role/state/constituency attributes here.
+	return "UP", nil
+}
+
+# 2.1 Env + sanity
+cd ~/fab-election-bench/stacks/stack-v31-raft
+
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD=${ORD_HOST}:7050
+
+export CC_NAME=accumvote
+export CC_VERSION=1.1
+export CC_LABEL=${CC_NAME}_${CC_VERSION}
+export CC_PATH=~/fab-election-bench/chaincode/accumvote_cc
+export CRYPTO=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+peer version | head -n1
+go version
+
+ls -la "$CC_PATH"
+
+# 2.2 Build & vendor updated chaincode
+cd "$CC_PATH"
+
+mkdir -p .fabriccfg
+printf "peer:\n  logging:\n    level: info\n" > .fabriccfg/core.yaml
+export FABRIC_CFG_PATH=$PWD/.fabriccfg
+
+export GOPROXY=https://proxy.golang.org,direct
+
+go mod tidy
+go mod vendor
+go build ./...   # should succeed
+
+# 2.3 Package v1.1
+cd ~/fab-election-bench/stacks/stack-v31-raft
+
+peer lifecycle chaincode package /tmp/${CC_LABEL}.tgz \
+  --lang golang --label ${CC_LABEL} --path "$CC_PATH"
+
+cp -f /tmp/${CC_LABEL}.tgz ~/fab-election-bench/${CC_LABEL}.tgz
+ls -lh ~/fab-election-bench/${CC_LABEL}.tgz
+
+# 2.4 PDC config (same as earlier, safe to re-create)
+
+cat > /tmp/collections-votes.json <<'JSON'
+[
+  {
+    "name": "votes_pdc",
+    "policy": "OR('ECIMSP.member','OppMSP.member','CivilMSP.member')",
+    "requiredPeerCount": 0,
+    "maxPeerCount": 1,
+    "memberOnlyRead": true,
+    "blockToLive": 0
+  }
+]
+JSON
+
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp /tmp/collections-votes.json "$P:/tmp/collections-votes.json"
+done
+
+# 2.5 (Optional but safe) refresh /opt/admin-msp and TLS roots
+
+docker exec -u root peer0.eci.bench.local   bash -lc 'rm -rf /opt/admin-msp'
+docker exec -u root peer0.opp.bench.local   bash -lc 'rm -rf /opt/admin-msp'
+docker exec -u root peer0.civil.bench.local bash -lc 'rm -rf /opt/admin-msp'
+
+docker cp "$CRYPTO/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp/."     peer0.eci.bench.local:/opt/admin-msp
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/users/Admin@opp.bench.local/msp/."     peer0.opp.bench.local:/opt/admin-msp
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/users/Admin@civil.bench.local/msp/." peer0.civil.bench.local:/opt/admin-msp
+
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/peers/peer0.opp.bench.local/tls/ca.crt"     peer0.eci.bench.local:/opt/OppMSP-peer-ca.pem
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/peers/peer0.civil.bench.local/tls/ca.crt" peer0.eci.bench.local:/opt/CivilMSP-peer-ca.pem
+
+# 2.6 Distribute package to peers
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp ~/fab-election-bench/${CC_LABEL}.tgz "$P:/tmp/${CC_LABEL}.tgz"
+done
+
+# 2.7 Install v1.1 on all peers
+
+install_cc () {
+  local P=$1 MSP=$2 ADDR=$3
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "peer lifecycle chaincode install /tmp/${CC_LABEL}.tgz || true"
+}
+
+install_cc peer0.eci.bench.local   ECIMSP     peer0.eci.bench.local:7051
+install_cc peer0.opp.bench.local   OppMSP     peer0.opp.bench.local:8051
+install_cc peer0.civil.bench.local CivilMSP   peer0.civil.bench.local:9051
+
+# 2.8 Capture Package IDs for this label
+
+PKG_ECI=$(docker exec -e CORE_PEER_LOCALMSPID=ECIMSP  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.eci.bench.local   bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+PKG_OPP=$(docker exec -e CORE_PEER_LOCALMSPID=OppMSP  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.opp.bench.local   bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+PKG_CIV=$(docker exec -e CORE_PEER_LOCALMSPID=CivilMSP -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp  peer0.civil.bench.local bash -lc "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'")
+
+echo "PKG_ECI=$PKG_ECI"
+echo "PKG_OPP=$PKG_OPP"
+echo "PKG_CIV=$PKG_CIV"
+
+# 2.9 Approve v1.1 (sequence 2) for all orgs
+
+approve_cc () {
+  local P=$1 MSP=$2 ADDR=$3 PKGID=$4
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "
+peer lifecycle chaincode approveformyorg \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence 2 \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --package-id ${PKGID} \
+  --signature-policy \"AND('ECIMSP.peer','OppMSP.peer')\" \
+  --collections-config /tmp/collections-votes.json
+"
+}
+
+approve_cc peer0.eci.bench.local   ECIMSP     peer0.eci.bench.local:7051   "$PKG_ECI"
+approve_cc peer0.opp.bench.local   OppMSP     peer0.opp.bench.local:8051   "$PKG_OPP"
+approve_cc peer0.civil.bench.local CivilMSP   peer0.civil.bench.local:9051 "$PKG_CIV"
+
+# 2.10 Check readiness
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.eci.bench.local bash -lc \
+"peer lifecycle chaincode checkcommitreadiness \
+   --channelID ${CHAN} \
+   --name ${CC_NAME} \
+   --version ${CC_VERSION} \
+   --sequence 2 \
+   --signature-policy \"AND('ECIMSP.peer','OppMSP.peer')\" \
+   --collections-config /tmp/collections-votes.json \
+   --output json"
+
+# 2.11 Commit v1.1 definition (sequence 2)
+
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode commit \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence 2 \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --collections-config /tmp/collections-votes.json \
+  --signature-policy \"AND('ECIMSP.peer','OppMSP.peer')\" \
+  \
+  --peerAddresses peer0.eci.bench.local:7051 \
+  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  \
+  --peerAddresses peer0.opp.bench.local:8051 \
+  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem
+"
+# 2.12 Confirm committed definition
+
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.eci.bench.local bash -lc \
+"peer lifecycle chaincode querycommitted --channelID ${CHAN} --name ${CC_NAME}"
+
+#% #%#%#%#%===== END Redeploy accumvote as v1.1 (sequence 2)=====
+
+#% #%#%#%#%===== START Deploy accumvote2 from scratch (sequence 1)=====
+# 0. Env + dynamic sequence discovery
+cd ~/fab-election-bench/stacks/stack-v31-raft
+
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD=${ORD_HOST}:7050
+
+export CC_NAME_NEW=accumvote2
+export CC_VERSION_NEW=1.1          # bump if you want; can stay 1.0 too
+export CC_LABEL_NEW=${CC_NAME_NEW}_${CC_VERSION_NEW}
+
+export CC_PATH=~/fab-election-bench/chaincode/accumvote_cc
+export CRYPTO=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+# Optional sanity
+peer version | head -n1
+go version
+ls -la "$CC_PATH"
+
+# ---- NEW: derive SEQ_NEW from current committed definition ----
+CURRENT_SEQ=$(
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=ECIMSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+    peer0.eci.bench.local bash -lc "
+      peer lifecycle chaincode querycommitted \
+        --channelID ${CHAN} \
+        --name ${CC_NAME_NEW} 2>/dev/null | \
+      sed -n 's/.*[Ss]equence:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p'
+    "
+)
+
+# If nothing found (first deployment), treat as 0
+if [ -z \"${CURRENT_SEQ}\" ]; then
+  CURRENT_SEQ=0
+fi
+
+export SEQ_NEW=$((CURRENT_SEQ + 1))
+echo \"Detected CURRENT_SEQ=${CURRENT_SEQ}, using SEQ_NEW=${SEQ_NEW}\"
+
+# 1. Build updated chaincode
+cd "$CC_PATH"
+mkdir -p .fabriccfg
+printf "peer:\n  logging:\n    level: info\n" > .fabriccfg/core.yaml
+
+export FABRIC_CFG_PATH=$PWD/.fabriccfg
+export GOPROXY=https://proxy.golang.org,direct
+
+go mod tidy
+go mod vendor
+go build ./...
+
+# 2. Package accumvote2 with the new label
+cd ~/fab-election-bench/stacks/stack-v31-raft
+
+peer lifecycle chaincode package /tmp/${CC_LABEL_NEW}.tgz \
+  --lang golang --label ${CC_LABEL_NEW} --path "$CC_PATH"
+
+cp -f /tmp/${CC_LABEL_NEW}.tgz ~/fab-election-bench/${CC_LABEL_NEW}.tgz
+ls -lh ~/fab-election-bench/${CC_LABEL_NEW}.tgz
+
+# 3. PDC config (if not already there; safe to re-copy)
+cat > /tmp/collections-votes2.json <<'JSON'
+[
+  {
+    "name": "votes_pdc",
+    "policy": "OR('ECIMSP.member','OppMSP.member','CivilMSP.member')",
+    "requiredPeerCount": 0,
+    "maxPeerCount": 1,
+    "memberOnlyRead": true,
+    "blockToLive": 0
+  }
+]
+JSON
+
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp /tmp/collections-votes2.json "$P:/tmp/collections-votes2.json"
+done
+
+# 4. Install new package on all peers
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp ~/fab-election-bench/${CC_LABEL_NEW}.tgz "$P:/tmp/${CC_LABEL_NEW}.tgz"
+done
+
+install_new () {
+  local P=$1 MSP=$2 ADDR=$3
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "peer lifecycle chaincode install /tmp/${CC_LABEL_NEW}.tgz || true"
+}
+
+install_new peer0.eci.bench.local   ECIMSP   peer0.eci.bench.local:7051
+install_new peer0.opp.bench.local   OppMSP   peer0.opp.bench.local:8051
+install_new peer0.civil.bench.local CivilMSP peer0.civil.bench.local:9051
+
+# 5. Capture package IDs
+PKG_ECI=$(docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.eci.bench.local bash -lc \
+  "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \([^,]*\), Label: ${CC_LABEL_NEW}/\1/p'")
+
+PKG_OPP=$(docker exec \
+  -e CORE_PEER_LOCALMSPID=OppMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.opp.bench.local bash -lc \
+  "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \([^,]*\), Label: ${CC_LABEL_NEW}/\1/p'")
+
+PKG_CIV=$(docker exec \
+  -e CORE_PEER_LOCALMSPID=CivilMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  peer0.civil.bench.local bash -lc \
+  "peer lifecycle chaincode queryinstalled | sed -n 's/Package ID: \([^,]*\), Label: ${CC_LABEL_NEW}/\1/p'")
+
+echo "PKG_ECI=$PKG_ECI"
+echo "PKG_OPP=$PKG_OPP"
+echo "PKG_CIV=$PKG_CIV"
+
+
+# 6. Approve with dynamic ${SEQ_NEW}
+approve_new () {
+  local P=$1 MSP=$2 ADDR=$3 PKGID=$4
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$P" bash -lc "
+peer lifecycle chaincode approveformyorg \
+  --channelID ${CHAN} \
+  --name ${CC_NAME_NEW} \
+  --version ${CC_VERSION_NEW} \
+  --sequence ${SEQ_NEW} \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --package-id ${PKGID} \
+  --signature-policy \"OR('ECIMSP.peer','OppMSP.peer','CivilMSP.peer')\" \
+  --collections-config /tmp/collections-votes2.json
+"
+}
+
+approve_new peer0.eci.bench.local   ECIMSP   peer0.eci.bench.local:7051   "$PKG_ECI"
+approve_new peer0.opp.bench.local   OppMSP   peer0.opp.bench.local:8051   "$PKG_OPP"
+approve_new peer0.civil.bench.local CivilMSP peer0.civil.bench.local:9051 "$PKG_CIV"
+
+# Check readiness with ${SEQ_NEW} as well:
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode checkcommitreadiness \
+  --channelID ${CHAN} \
+  --name ${CC_NAME_NEW} \
+  --version ${CC_VERSION_NEW} \
+  --sequence ${SEQ_NEW} \
+  --signature-policy \"OR('ECIMSP.peer','OppMSP.peer','CivilMSP.peer')\" \
+  --collections-config /tmp/collections-votes2.json \
+  --output json
+"
+
+# 7. Commit with ${SEQ_NEW}
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode commit \
+  --channelID ${CHAN} \
+  --name ${CC_NAME_NEW} \
+  --version ${CC_VERSION_NEW} \
+  --sequence ${SEQ_NEW} \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --collections-config /tmp/collections-votes2.json \
+  --signature-policy \"OR('ECIMSP.peer','OppMSP.peer','CivilMSP.peer')\" \
+  \
+  --peerAddresses peer0.eci.bench.local:7051 \
+  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  \
+  --peerAddresses peer0.opp.bench.local:8051 \
+  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem
+"
+# 8. Verify (will show the new sequence)
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  echo "=== ${P} ==="
+  docker exec "$P" bash -lc "
+    peer lifecycle chaincode querycommitted \
+      --channelID ${CHAN} \
+      --name ${CC_NAME_NEW}
+  "
+done
+
+
+
+# refresh from evote-preload
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local \
+  bash -lc 'peer chaincode invoke \
+    -C statechan-01 \
+    -n accumvote2 \
+    -c "{\"Args\":[\"RefreshCandidateListFromPreload\",\"C-001\"]}" \
+    -o orderer1.eci1.bench.local:7050 \
+    --tls --cafile /opt/orderer-ca.pem \
+    --ordererTLSHostnameOverride orderer1.eci1.bench.local'
+
+
+# Run your TallyPrepare query
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local \
+  bash -lc 'peer chaincode query \
+    -C statechan-01 \
+    -n accumvote2 \
+    -c "{\"Args\":[\"TallyPrepare\",\"C-001\"]}"'
+#% #%#%#%#%===== END Deploy accumvote2 from scratch (sequence 1)=====
+
+
+
+#% #%#%#%#%===== START Deploy accumvote3 from scratch =====
+# 0. Set env on host
+cd ~/fab-election-bench/stacks/stack-v31-raft
+
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD=${ORD_HOST}:7050
+
+# Name/version of the definition you want
+export CC_NAME=accumvote3
+export CC_VERSION=1.1
+
+# IMPORTANT: this must match the installed package label
+# If you reused accumvote2_1.1 when packaging, keep it like this:
+export CC_LABEL=accumvote2_1.1
+
+export CRYPTO=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+echo "CHAN=$CHAN  CC_NAME=$CC_NAME  CC_VERSION=$CC_VERSION  CC_LABEL=$CC_LABEL"
+
+# 1. Dynamically compute SEQ_NEW
+SEQ_OLD=$(
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=ECIMSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+    peer0.eci.bench.local bash -lc "
+      peer lifecycle chaincode querycommitted \
+        --channelID ${CHAN} \
+        --name ${CC_NAME} 2>/dev/null | \
+      sed -n 's/.*Sequence: \\([0-9]\\+\\),.*/\\1/p'
+    "
+)
+
+if [ -z \"${SEQ_OLD}\" ]; then
+  SEQ_OLD=0
+fi
+
+export SEQ_NEW=$((SEQ_OLD + 1))
+
+echo "SEQ_OLD=${SEQ_OLD}"
+echo "SEQ_NEW=${SEQ_NEW}"
+
+# 2. PDC config for votes_pdc
+cat > /tmp/collections-votes3.json <<'JSON'
+[
+  {
+    "name": "votes_pdc",
+    "policy": "OR('ECIMSP.member','OppMSP.member','CivilMSP.member')",
+    "requiredPeerCount": 0,
+    "maxPeerCount": 1,
+    "memberOnlyRead": true,
+    "blockToLive": 0
+  }
+]
+JSON
+
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp /tmp/collections-votes3.json "$P:/tmp/collections-votes3.json"
+done
+
+# 3. Get Package IDs for the installed package
+PKG_ECI=$(
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=ECIMSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    peer0.eci.bench.local bash -lc "
+      peer lifecycle chaincode queryinstalled | \
+      sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'
+    "
+)
+
+PKG_OPP=$(
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=OppMSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    peer0.opp.bench.local bash -lc "
+      peer lifecycle chaincode queryinstalled | \
+      sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'
+    "
+)
+
+PKG_CIV=$(
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=CivilMSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    peer0.civil.bench.local bash -lc "
+      peer lifecycle chaincode queryinstalled | \
+      sed -n 's/Package ID: \\([^,]*\\), Label: ${CC_LABEL}/\\1/p'
+    "
+)
+
+echo "PKG_ECI=${PKG_ECI}"
+echo "PKG_OPP=${PKG_OPP}"
+echo "PKG_CIV=${PKG_CIV}"
+
+# 4. Approve accumvote3 with 2-of-3 endorsement policy
+approve_cc () {
+  local PEER=$1 MSP=$2 ADDR=$3 PKGID=$4
+  docker exec \
+    -e CORE_PEER_LOCALMSPID=$MSP \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+    -e CORE_PEER_TLS_ENABLED=true \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+    -e CORE_PEER_ADDRESS=$ADDR \
+    "$PEER" bash -lc "
+peer lifecycle chaincode approveformyorg \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence ${SEQ_NEW} \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --package-id ${PKGID} \
+  --signature-policy \"OutOf(2, 'ECIMSP.peer','OppMSP.peer','CivilMSP.peer')\" \
+  --collections-config /tmp/collections-votes3.json
+"
+}
+
+approve_cc peer0.eci.bench.local   ECIMSP   peer0.eci.bench.local:7051   "${PKG_ECI}"
+approve_cc peer0.opp.bench.local   OppMSP   peer0.opp.bench.local:8051   "${PKG_OPP}"
+approve_cc peer0.civil.bench.local CivilMSP peer0.civil.bench.local:9051 "${PKG_CIV}"
+
+
+# 5. Check commit readiness
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode checkcommitreadiness \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence ${SEQ_NEW} \
+  --signature-policy \"OutOf(2, 'ECIMSP.peer','OppMSP.peer','CivilMSP.peer')\" \
+  --collections-config /tmp/collections-votes3.json \
+  --output json
+"
+# 6. Commit accumvote3 with 2-of-3 policy
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc "
+peer lifecycle chaincode commit \
+  --channelID ${CHAN} \
+  --name ${CC_NAME} \
+  --version ${CC_VERSION} \
+  --sequence ${SEQ_NEW} \
+  --orderer ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  --signature-policy \"OutOf(2, 'ECIMSP.peer','OppMSP.peer','CivilMSP.peer')\" \
+  --collections-config /tmp/collections-votes3.json \
+  \
+  --peerAddresses peer0.eci.bench.local:7051 \
+  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  \
+  --peerAddresses peer0.opp.bench.local:8051 \
+  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem
+"
+
+# 7. Sanity: query committed on all peers
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  echo "===== ${P} ====="
+  docker exec "$P" bash -lc "
+    peer lifecycle chaincode querycommitted \
+      --channelID ${CHAN} \
+      --name ${CC_NAME}
+  "
+done
+
+
+#2. Behavioural test: show that single-endorser writes don’t commit
+# 2.1. See current params
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc '
+peer chaincode query \
+  -C statechan-01 \
+  -n accumvote3 \
+  -c "{\"Args\":[\"GetParams\"]}"
+'
+
+# 2.2. Single-endorser write that should fail at validation
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc '
+CHAN=statechan-01
+ORD_HOST=orderer1.eci1.bench.local
+ORD=${ORD_HOST}:7050
+CC_NAME=accumvote3
+PARAMS="{\\\"EMIT_EVENTS\\\":false}"
+
+peer chaincode invoke \
+  -o ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  -C ${CHAN} \
+  -n ${CC_NAME} \
+  --peerAddresses peer0.eci.bench.local:7051 \
+  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  -c "{\"Args\":[\"SetParams\",\"${PARAMS}\"]}"
+'
+
+# Now query params again:
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc '
+peer chaincode query \
+  -C statechan-01 \
+  -n accumvote3 \
+  -c "{\"Args\":[\"GetParams\"]}"
+'
+
+# 2.3. Two-endorser write that should commit
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc '
+CHAN=statechan-01
+ORD_HOST=orderer1.eci1.bench.local
+ORD=${ORD_HOST}:7050
+CC_NAME=accumvote3
+PARAMS="{\"EMIT_EVENTS\":false}"
+
+peer chaincode invoke \
+  -o ${ORD} --tls --cafile /opt/orderer-ca.pem --ordererTLSHostnameOverride ${ORD_HOST} \
+  -C ${CHAN} \
+  -n ${CC_NAME} \
+  --peerAddresses peer0.eci.bench.local:7051 \
+  --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+  --peerAddresses peer0.opp.bench.local:8051 \
+  --tlsRootCertFiles /opt/OppMSP-peer-ca.pem \
+  -c "{\"Args\":[\"SetParams\",\"${PARAMS}\"]}"
+'
+
+# Then query again:
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local bash -lc '
+peer chaincode query \
+  -C statechan-01 \
+  -n accumvote3 \
+  -c "{\"Args\":[\"GetParams\"]}"
+'
+
+
+#% #%#%#%#%===== END Deploy accumvote3 from scratch =====
+
+
+
+#% #%#%#%#%===== START Test RecordVote=====
+docker exec \
+  -e CORE_PEER_LOCALMSPID=ECIMSP \
+  -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp \
+  -e CORE_PEER_TLS_ENABLED=true \
+  -e CORE_PEER_TLS_ROOTCERT_FILE=/var/hyperledger/tls/ca.crt \
+  -e CORE_PEER_ADDRESS=peer0.eci.bench.local:7051 \
+  peer0.eci.bench.local \
+  peer chaincode invoke \
+    -C statechan-01 \
+    -n accumvote2 \
+    -o orderer1.eci1.bench.local:7050 \
+    --tls --cafile /opt/orderer-ca.pem \
+    --ordererTLSHostnameOverride orderer1.eci1.bench.local \
+    --peerAddresses peer0.eci.bench.local:7051 \
+    --tlsRootCertFiles /var/hyperledger/tls/ca.crt \
+    --peerAddresses peer0.opp.bench.local:8051 \
+    --tlsRootCertFiles /opt/OppMSP-peer-ca.pem \
+    -c '{
+      "Args": [
+        "RecordVote",
+        "CLI2-TEST-0001",
+        "C-001",
+        "cand-000001",
+        "3",
+        "salt-CLI2-TEST-0001",
+        "1",
+        "att-ok",
+        "B-0001",
+        "D0000000001",
+        "hash-000001",
+        "",
+        "",
+        "",
+        ""
+      ]
+    }' \
+    --waitForEvent
+
+#% #%#%#%#%===== START Test RecordVote=====
+
+
+# Get file size
+ ls -lh /home/ubuntu/hyperledger/data/generated/voters.csv
+ 
+# Get no. of lines in CSV
+wc -l /home/ubuntu/hyperledger/data/generated/voters.csv
+
+# Trim to 1M voters
+ { head -n 1 /home/ubuntu/hyperledger/data/generated/voters.csv; \
+  tail -n +2 /home/ubuntu/hyperledger/data/generated/voters.csv | head -n 1000000; \
+} > /home/ubuntu/hyperledger/data/generated/voters_1M.csv
+
+#% #%#%#%#%===== Bring the Fabric network up after a reboot (2nd one)=====
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- 0) Docker should be running
+sudo systemctl start docker
+
+# --- 1) Go to your project
+cd ~/fab-election-bench
+
+docker compose -f stacks/stack-v31-bft/docker-compose.yaml stop || true
+
+# --- 2) Paths
+OROOT=stacks/stack-v31-raft/crypto/ordererOrganizations
+PROOT=stacks/stack-v31-raft/crypto/peerOrganizations
+B=stacks/stack-v31-raft/channel-artifacts/orderer-admin-tlscas.bundle.pem
+DC=stacks/stack-v31-raft/docker-compose.yaml
+DCO=stacks/stack-v31-raft/docker-compose.override.yaml
+BLK=stacks/stack-v31-raft/channel-artifacts/statechan-01.block
+
+# --- 3) Add/refresh host mappings (orderer admin-API hostnames)
+sudo sed -i '/eci1\.bench\.local/d;/eci2\.bench\.local/d;/opp1\.bench\.local/d;/opp2\.bench\.local/d;/civ1\.bench\.local/d' /etc/hosts
+sudo tee -a /etc/hosts >/dev/null <<'EOF'
+127.0.0.1 orderer1.eci1.bench.local
+127.0.0.1 orderer2.eci2.bench.local
+127.0.0.1 orderer3.opp1.bench.local
+127.0.0.1 orderer4.opp2.bench.local
+127.0.0.1 orderer5.civ1.bench.local
+EOF
+
+echo "127.0.0.1 peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local orderer1.eci1.bench.local" | sudo tee -a /etc/hosts
+
+
+# --- 4) Ensure the admin TLS CA bundle (SERVER roots) exists (5 certs)
+if [[ ! -s "$B" ]] || [[ "$(grep -c 'BEGIN CERTIFICATE' "$B" || echo 0)" -ne 5 ]]; then
+  cat \
+    "$OROOT/eci1.bench.local/tlsca/tlsca.eci1.bench.local-cert.pem" \
+    "$OROOT/eci2.bench.local/tlsca/tlsca.eci2.bench.local-cert.pem" \
+    "$OROOT/opp1.bench.local/tlsca/tlsca.opp1.bench.local-cert.pem" \
+    "$OROOT/opp2.bench.local/tlsca/tlsca.opp2.bench.local-cert.pem" \
+    "$OROOT/civ1.bench.local/tlsca/tlsca.civ1.bench.local-cert.pem" \
+    > "$B"
+fi
+
+# --- 5) Bring up orderers (your original compose + override)
+docker compose -f "$DC" -f "$DCO" up -d \
+  orderer1.eci1.bench.local orderer2.eci2.bench.local \
+  orderer3.opp1.bench.local orderer4.opp2.bench.local orderer5.civ1.bench.local
+
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | sed -n '1p;/orderer[1-5]\./p'
+
+# --- 6) osnadmin helpers (unchanged)
+osn() {
+  local ORG="$1" HP="$2"
+  osnadmin channel list -o "$HP" \
+    --client-cert "$OROOT/$ORG/users/Admin@$ORG/tls/client.crt" \
+    --client-key  "$OROOT/$ORG/users/Admin@$ORG/tls/client.key" \
+    --ca-file     "$B"
+}
+wait_osn() {
+  local ORG="$1" HP="$2" i=0
+  until osn "$ORG" "$HP" >/dev/null 2>&1; do
+    ((i++)); [[ $i -gt 90 ]] && { echo "Timeout waiting for $HP"; exit 1; }
+    sleep 1
+  done
+  osn "$ORG" "$HP"
+}
+
+wait_osn eci1.bench.local orderer1.eci1.bench.local:7443
+wait_osn eci2.bench.local orderer2.eci2.bench.local:8443
+wait_osn opp1.bench.local orderer3.opp1.bench.local:9443
+wait_osn opp2.bench.local orderer4.opp2.bench.local:10443
+wait_osn civ1.bench.local orderer5.civ1.bench.local:11443
+
+ensure_join() {
+  local ORG="$1" HP="$2"
+
+  # If the channel is already there, we're done (failure here doesn't exit the script)
+  if osn "$ORG" "$HP" | grep -q '"name":[[:space:]]*"statechan-01"'; then
+    echo "[$ORG] $HP already lists statechan-01"
+    return 0
+  fi
+
+  echo "[$ORG] joining statechan-01 on $HP ..."
+  if ! osnadmin channel join -o "$HP" \
+      --channelID statechan-01 \
+      --config-block "$BLK" \
+      --client-cert "$OROOT/$ORG/users/Admin@$ORG/tls/client.crt" \
+      --client-key  "$OROOT/$ORG/users/Admin@$ORG/tls/client.key" \
+      --ca-file     "$B"; then
+    # Do not kill the script — just warn and continue
+    echo "WARN: osnadmin join failed for $ORG ($HP); continuing"
+  fi
+}
+
+# Temporarily disable 'exit-on-error' so a single transient failure
+# can’t close your WSL window/session.
+set +e
+ensure_join eci1.bench.local orderer1.eci1.bench.local:7443
+ensure_join eci2.bench.local orderer2.eci2.bench.local:8443
+ensure_join opp1.bench.local orderer3.opp1.bench.local:9443
+ensure_join opp2.bench.local orderer4.opp2.bench.local:10443
+ensure_join civ1.bench.local orderer5.civ1.bench.local:11443
+set -e
+
+
+# --- 7) CHANGE #1: Ensure sticky Admin MSPs exist on host for every peer
+# These directories must match the bind mounts in your docker-compose.override.yaml
+mkdir -p stacks/stack-v31-raft/peer-admin/eci.bench.local/msp \
+         stacks/stack-v31-raft/peer-admin/opp.bench.local/msp \
+         stacks/stack-v31-raft/peer-admin/civil.bench.local/msp
+
+# Refresh them from the crypto material if they’re empty or missing
+for ORG in eci.bench.local opp.bench.local civil.bench.local; do
+  SRC="$PROOT/$ORG/users/Admin@$ORG/msp"
+  DST="stacks/stack-v31-raft/peer-admin/$ORG/msp"
+  if [[ ! -d "$DST/signcerts" || ! -d "$DST/keystore" || -z "$(ls -A "$DST/keystore" 2>/dev/null || true)" ]]; then
+    [[ -d "$SRC" ]] || { echo "Missing $SRC"; exit 1; }
+    rsync -a --delete "$SRC/" "$DST/"
+  fi
+done
+
+# --- 8) Start peers (compose override should mount /opt/admin-msp and set CORE_PEER_MSPCONFIGPATH)
+docker compose -f "$DC" -f "$DCO" up -d \
+  peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local
+
+docker ps --format 'table {{.Names}}\t{{.Status}}' | sed -n '1p;/peer0\./p'
+
+# --- 9) Quick Admin MSP visibility sanity (inside containers)
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  echo "==> $P"
+  docker exec "$P" sh -lc 'ls -1 /opt/admin-msp/keystore/* /opt/admin-msp/signcerts/*.pem >/dev/null && echo "Admin MSP OK"'
+done
+
+# --- 10) Read-only channel checks (explicit MSP env just to be crystal-clear)
+docker exec -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp -e CORE_PEER_LOCALMSPID=ECIMSP \
+  peer0.eci.bench.local sh -lc 'peer channel getinfo -c statechan-01 || true'
+
+docker exec -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp -e CORE_PEER_LOCALMSPID=OppMSP \
+  peer0.opp.bench.local sh -lc 'peer channel getinfo -c statechan-01 || true'
+
+docker exec -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp -e CORE_PEER_LOCALMSPID=CivilMSP \
+  peer0.civil.bench.local sh -lc 'peer channel getinfo -c statechan-01 || true'
+
+# --- 11) CHANGE #2: Re-join helper runs with explicit MSP env (idempotent)
+BLK="$PWD/stacks/stack-v31-raft/channel-artifacts/statechan-01.block"
+ORDERER_TLS_CA="$PWD/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt"
+
+rejoin_if_needed () {
+  local PEER_NAME="$1" MSPID="$2"
+  if ! docker exec "$PEER_NAME" sh -lc "peer channel list | grep -qx statechan-01"; then
+    echo "Re-joining $PEER_NAME to statechan-01…"
+    docker cp "$BLK"            "$PEER_NAME":/tmp/statechan-01.block
+    docker cp "$ORDERER_TLS_CA" "$PEER_NAME":/tmp/orderer1-tls-ca.crt
+    docker exec -e CORE_PEER_MSPCONFIGPATH=/opt/admin-msp -e CORE_PEER_LOCALMSPID="$MSPID" \
+      "$PEER_NAME" sh -lc '
+        set -e
+        peer channel join -b /tmp/statechan-01.block \
+          --orderer orderer1.eci1.bench.local:7050 \
+          --tls --cafile /tmp/orderer1-tls-ca.crt
+        peer channel list
+        peer channel getinfo -c statechan-01 || true
+      '
+  fi
+}
+
+rejoin_if_needed peer0.eci.bench.local   ECIMSP
+rejoin_if_needed peer0.opp.bench.local   OppMSP
+rejoin_if_needed peer0.civil.bench.local CivilMSP
+
+
+# For chaincode
+export CHAN=statechan-01
+export ORD_HOST=orderer1.eci1.bench.local
+export ORD_PORT=7050
+export ORD=$ORD_HOST:$ORD_PORT
+export NAME=evote-preload
+export VERSION=1.0
+export SEQ=1
+export LABEL=${NAME}_${VERSION}
+
+# paths may vary; adjust to your repo layout
+CRYPTO=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
+
+# Orderer1 TLS CA into every peer
+for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
+  docker cp "$CRYPTO/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt" "$P:/opt/orderer-ca.pem"
+done
+
+# OPP & CIVIL peer TLS CA into ECI
+docker cp "$CRYPTO/peerOrganizations/opp.bench.local/peers/peer0.opp.bench.local/tls/ca.crt"   peer0.eci.bench.local:/opt/OppMSP-peer-ca.pem
+docker cp "$CRYPTO/peerOrganizations/civil.bench.local/peers/peer0.civil.bench.local/tls/ca.crt" peer0.eci.bench.local:/opt/CivilMSP-peer-ca.pem
+
+
+
+echo "✅ Network is up."
+
+
+
+#%#%#%#%#%#%#%#%
+
+
+#Check height of peers
+docker exec bft-peer0.civil.bench.local bash -lc '
+  peer channel getinfo -c statechan-01
+'
+
+docker exec bft-peer0.eci.bench.local bash -lc '
+  peer channel getinfo -c statechan-01
+'
+
+docker exec bft-peer0.opp.bench.local bash -lc '
+  peer channel getinfo -c statechan-01
+'
+
+
+# Logs
+docker logs -f bft-orderer1.eci1.bench.local
+docker logs --tail 100 -f bft-orderer1.eci1.bench.local
+
+docker logs -f bft-peer0.eci.bench.local
+docker logs --tail 100 -f bft-peer0.eci.bench.local
+
+docker logs bft-peer0.eci.bench.local 2>&1 | egrep "panic|FATA|ERROR" | tail -n 20
+
+# Go to Fabric project
+cd ~/fab-election-bench
+
+# Bring up RAFT stack (orderers + peers)
+docker compose \
+  -f stacks/stack-v31-raft/docker-compose.yaml \
+  -f stacks/stack-v31-raft/docker-compose.override.yaml \
+  up -d
+  
+# Bring up BFT stack (orderers + peers)
+docker compose -f docker-compose.yaml -f docker-compose.override.yaml down -v
+
+export BFT_STACK=stacks/stack-v31-bft
+docker compose -f "${BFT_STACK}/docker-compose.yaml" -f "${BFT_STACK}/docker-compose.override.yaml"  up -d
+
+  
+docker compose -f stacks/stack-v31-raft/docker-compose.yaml  -f stacks/stack-v31-raft/docker-compose.override.yaml stop
+docker compose -f stacks/stack-v31-bft/docker-compose.yaml  -f stacks/stack-v31-bft/docker-compose.override.yaml start
+docker compose -f stacks/stack-v31-bft/docker-compose.yaml stop
+
+docker ps --format 'table {{.Names}}\t{{.Status}}' | egrep 'orderer|peer'
+docker ps --format 'table {{.Names}}\t{{.Ports}}' | egrep 'orderer'
+  
+#RESTART
+docker compose -f "$DC" -f "$DCO" restart peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local
+
+#Free memory
+echo 1 | sudo tee /proc/sys/vm/drop_caches
+free -h

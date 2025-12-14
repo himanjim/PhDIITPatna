@@ -1,0 +1,142 @@
+# stacks/stack-v31-raft/docker-compose.override.yaml
+# Keep Raft inter-orderer mTLS settings (your original) + add Admin MSP mounts for peers.
+
+services:
+  ###########################################################################
+  # PEERS — mount each org's Admin MSP so CLI can use Admin identity inside
+  # Usage example (inside a peer container):
+  #   export CORE_PEER_MSPCONFIGPATH=/opt/admin-msp
+  #   export CORE_PEER_LOCALMSPID=ECIMSP|OppMSP|CivilMSP
+  #   peer channel getinfo -c statechan-01
+  ###########################################################################
+  peer0.eci.bench.local:
+    # ensure no cross-org bootstrap is set by accident
+    environment:
+      CORE_PEER_GOSSIP_BOOTSTRAP: ""
+      # CORE_PEER_MSPCONFIGPATH: /opt/admin-msp
+      CORE_PEER_LOCALMSPID: ECIMSP
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.eci.bench.local:7051
+      BYPASS_ABAC_FOR_TEST: "on"
+      BYPASS_STATE: "UP"
+    volumes:
+      - type: bind
+        source: ${PWD}/stacks/stack-v31-raft/crypto/peerOrganizations/eci.bench.local/users/Admin@eci.bench.local/msp
+        target: /opt/admin-msp
+        read_only: true
+      - type: bind
+        source: ${PWD}/chaincode
+        target: /opt/chaincode
+        read_only: true
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${PWD}/stacks/stack-v31-raft/config/core.yaml
+        target: /etc/hyperledger/fabric/core.yaml
+        read_only: true
+
+  peer0.opp.bench.local:
+    environment:
+      CORE_PEER_GOSSIP_BOOTSTRAP: ""
+      # CORE_PEER_MSPCONFIGPATH: /opt/admin-msp
+      CORE_PEER_LOCALMSPID: OppMSP
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.opp.bench.local:8051
+      BYPASS_ABAC_FOR_TEST: "on"
+      BYPASS_STATE: "UP"
+    volumes:
+      - type: bind
+        source: ${PWD}/stacks/stack-v31-raft/crypto/peerOrganizations/opp.bench.local/users/Admin@opp.bench.local/msp
+        target: /opt/admin-msp
+        read_only: true
+      - type: bind
+        source: ${PWD}/chaincode
+        target: /opt/chaincode
+        read_only: true
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${PWD}/stacks/stack-v31-raft/config/core.yaml
+        target: /etc/hyperledger/fabric/core.yaml
+        read_only: true
+
+  peer0.civil.bench.local:
+    environment:
+      CORE_PEER_GOSSIP_BOOTSTRAP: ""
+      # CORE_PEER_MSPCONFIGPATH: /opt/admin-msp
+      CORE_PEER_LOCALMSPID: CivilMSP
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.civil.bench.local:9051
+      BYPASS_ABAC_FOR_TEST: "on"
+      BYPASS_STATE: "UP"
+    volumes:
+      - type: bind
+        source: ${PWD}/stacks/stack-v31-raft/crypto/peerOrganizations/civil.bench.local/users/Admin@civil.bench.local/msp
+        target: /opt/admin-msp
+        read_only: true
+      - type: bind
+        source: ${PWD}/chaincode
+        target: /opt/chaincode
+        read_only: true
+
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${PWD}/stacks/stack-v31-raft/config/core.yaml
+        target: /etc/hyperledger/fabric/core.yaml
+        read_only: true
+
+  ###########################################################################
+  # ORDERERS — your existing override to enable Raft cluster mTLS
+  # IMPORTANT: ORDERER_GENERAL_CLUSTER_ROOTCAS must stay a plain string
+  ###########################################################################
+  orderer1.eci1.bench.local:
+    environment:
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTFILE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTKEYFILE: /var/hyperledger/orderer/tls/server.key
+      # IMPORTANT: plain string (no brackets, no YAML block)
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+    volumes:
+      - type: bind
+        source: ./channel-artifacts/orderer-admin-tlscas.bundle.pem
+        target: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+        read_only: true
+
+  orderer2.eci2.bench.local:
+    environment:
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTFILE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTKEYFILE: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+    volumes:
+      - type: bind
+        source: ./channel-artifacts/orderer-admin-tlscas.bundle.pem
+        target: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+        read_only: true
+
+  orderer3.opp1.bench.local:
+    environment:
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTFILE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTKEYFILE: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+    volumes:
+      - type: bind
+        source: ./channel-artifacts/orderer-admin-tlscas.bundle.pem
+        target: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+        read_only: true
+
+  orderer4.opp2.bench.local:
+    environment:
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTFILE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTKEYFILE: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+    volumes:
+      - type: bind
+        source: ./channel-artifacts/orderer-admin-tlscas.bundle.pem
+        target: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+        read_only: true
+
+  orderer5.civ1.bench.local:
+    environment:
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTFILE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTKEYFILE: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+    volumes:
+      - type: bind
+        source: ./channel-artifacts/orderer-admin-tlscas.bundle.pem
+        target: /etc/hyperledger/fabric/cluster-tlscas.bundle.pem
+        read_only: true
+

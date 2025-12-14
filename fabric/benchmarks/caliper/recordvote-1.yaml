@@ -1,0 +1,24 @@
+test:
+  name: "accumvote-recordvote-1"
+  description: "Single RecordVote smoke test"
+  workers:
+    number: 1
+
+  rounds:
+    - label: recordvote_1
+      description: "Exactly one RecordVote transaction"
+      txNumber: 1
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 1
+      workload:
+        module: ./workload/recordvote.js
+        arguments:
+          votersCsv:     "data/voters.csv"
+          candidatesCsv: "data/candidates.csv"
+          boothsCsv:     "data/booths.csv"
+          serialPrefix:  "SMOKE"
+          encOneHex:     "3"
+          attestationSig: "att-ok"
+          constituencyID: "C-001"

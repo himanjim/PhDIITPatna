@@ -1,0 +1,48 @@
+test:
+  name: "accumvote-full-loop"
+  description: "ClosePoll, TallyPrepare, PublishResults"
+  workers:
+    number: 4
+
+  rounds:
+    - label: close_poll
+      description: "Close poll for CONST-001 (required before publish)"
+      txNumber: 1
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 1
+      workload:
+        module: ./workload/tallyclose.js
+        arguments:
+          mode:          "close"
+          constituencyID: "C-001"
+
+    - label: tally_prepare
+      description: "Run TallyPrepare once"
+      txNumber: 1
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 1
+      workload:
+        module: ./workload/tallyclose.js
+        arguments:
+          mode:          "tally"
+          constituencyID: "C-001"
+
+    - label: publish_results
+      description: "Publish plaintext results and bundle hash"
+      txNumber: 1
+      rateControl:
+        type: fixed-load
+        opts:
+          transactionLoad: 1
+      workload:
+        module: ./workload/tallyclose.js
+        arguments:
+          mode:          "publish"
+          constituencyID: "C-001"
+          roundID:       "R1"
+          resultsJSON:   '{"CAND-001": 10000}'
+          bundleHash:    "deadbeefcafebabe"

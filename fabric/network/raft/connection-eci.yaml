@@ -1,0 +1,62 @@
+name: eci-gateway
+version: 1.0.0
+
+client:
+  organization: ECIMSP
+
+organizations:
+  ECIMSP:
+    mspid: ECIMSP
+    peers:
+      - peer0.eci.bench.local
+
+  OppMSP:
+    mspid: OppMSP
+    peers:
+      - peer0.opp.bench.local
+
+channels:
+  statechan-01:
+    orderers:
+      - orderer1.eci1.bench.local
+    peers:
+      peer0.eci.bench.local:
+        endorsingPeer: true
+        chaincodeQuery: true
+        ledgerQuery: true
+        eventSource: true
+      peer0.opp.bench.local:
+        endorsingPeer: true
+        chaincodeQuery: true
+        ledgerQuery: true
+        eventSource: true
+
+orderers:
+  orderer1.eci1.bench.local:
+    url: grpcs://orderer1.eci1.bench.local:7050
+    tlsCACerts:
+      path: /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt
+    grpcOptions:
+      ssl-target-name-override: orderer1.eci1.bench.local
+      hostnameOverride: orderer1.eci1.bench.local
+      request-timeout: 120000
+
+peers:
+  peer0.eci.bench.local:
+    url: grpcs://peer0.eci.bench.local:7051
+    tlsCACerts:
+      path: /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/peerOrganizations/eci.bench.local/peers/peer0.eci.bench.local/tls/ca.crt
+    grpcOptions:
+      ssl-target-name-override: peer0.eci.bench.local
+      hostnameOverride: peer0.eci.bench.local
+      request-timeout: 120000
+
+  peer0.opp.bench.local:
+    url: grpcs://peer0.opp.bench.local:8051
+    tlsCACerts:
+      path: /home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto/peerOrganizations/opp.bench.local/peers/peer0.opp.bench.local/tls/ca.crt
+    grpcOptions:
+      ssl-target-name-override: peer0.opp.bench.local
+      hostnameOverride: peer0.opp.bench.local
+      request-timeout: 120000
+

@@ -1,0 +1,11 @@
+[
+  {
+    "name": "voter_roll_pdc",
+    "policy": "OR('ECIMSP.member','OppMSP.member','CivilMSP.member')",
+    "requiredPeerCount": 1,
+    "maxPeerCount": 3,
+    "blockToLive": 0,
+    "memberOnlyRead": true
+  }
+]
+

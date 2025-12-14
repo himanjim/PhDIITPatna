@@ -1,0 +1,57 @@
+# 5 Raft orderer orgs (ECI×2, Opp×2, Civil×1) + 3 application orgs (ECI, Opp, Civil)
+OrdererOrgs:
+  - Name: ECI1
+    Domain: eci1.bench.local
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer1        # will listen on 7050
+
+  - Name: ECI2
+    Domain: eci2.bench.local
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer2        # 8050
+
+  - Name: OPP1
+    Domain: opp1.bench.local
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer3        # 9050
+
+  - Name: OPP2
+    Domain: opp2.bench.local
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer4        # 10050
+
+  - Name: CIV1
+    Domain: civ1.bench.local
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer5        # 11050
+
+PeerOrgs:
+  - Name: ECIMSP
+    Domain: eci.bench.local
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1
+
+  - Name: OppMSP
+    Domain: opp.bench.local
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1
+
+  - Name: CivilMSP
+    Domain: civil.bench.local
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1
+

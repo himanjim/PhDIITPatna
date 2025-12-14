@@ -1,0 +1,18 @@
+test:
+  name: ping-accumvote2
+  description: Ping test for accumvote2
+  workers:
+    number: 1
+  rounds:
+    - label: ping_1
+      txDuration: 30
+      rateControl:
+        type: fixed-load
+        opts:
+          tps: 10
+      workload:
+        module: ./workload/ping.js
+        arguments:
+          contractId: accumvote2
+          invokerIdentity: eci-admin
+
