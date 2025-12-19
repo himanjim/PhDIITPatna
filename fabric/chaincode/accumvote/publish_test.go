@@ -24,6 +24,8 @@ import (
 	"crypto/hmac"
     "crypto/sha256"
 	"crypto/rand"
+	"crypto/aes"
+    "crypto/cipher"
     "encoding/json"
     "fmt"
 	"strings"
@@ -776,20 +778,7 @@ func bioTagHexFor(Ktag, embed []byte, serial, txID, constituency string) string 
     return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
-// computeQRTest reproduces the off-chain QR logic used by clients.
-// Formula: QR = base64url( SHA256( const || txID || salt || SHA256(encOneHex) ) )
-// Params: constituencyID, txID, encOneHex, receiptSalt.
-// Returns: base64url string.
-func computeQRTest(constituencyID, txID, encOneHex, receiptSalt string) string {
-    inner := sha256.Sum256([]byte(encOneHex))
-    buf := bytes.NewBuffer(nil)
-    buf.WriteString(constituencyID)
-    buf.WriteString(txID)
-    buf.WriteString(receiptSalt)
-    buf.Write(inner[:]) // feed the 32 bytes, not the hex string
-    sum := sha256.Sum256(buf.Bytes())
-    return b64url(sum[:])
-}
+
 
 // b64url encodes bytes with URL-safe base64 and no padding.
 // Params: b.
@@ -797,4 +786,189 @@ func computeQRTest(constituencyID, txID, encOneHex, receiptSalt string) string {
 func b64url(b []byte) string {
     s := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
     return s
+}
+
+func Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks(t *testing.T) {
+	setProdEnv(t)
+	h := newHarness(t)
+	defer h.ctrl.Finish()
+
+	// Minimal preload: two candidates, one eligible voter.
+	h.stubPreloadCC([]string{testCand1, testCand2}, map[string]bool{"S-001": true})
+	requireNoErr(t, h.setPK_UP())
+	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2}))
+	requireNoErr(t, h.openPoll())
+
+	// ECI kiosk key used to seal the vote choice inside the QR payload.
+	kioskKey := make([]byte, 32)
+	if _, err := rand.Read(kioskKey); err != nil {
+		t.Fatalf("rand.Read(kioskKey): %v", err)
+	}
+
+	type voteResp struct {
+		TxID   string `json:"txID"`
+		Serial string `json:"serial"`
+		HC     string `json:"hC"`
+		Epoch  string `json:"epoch"`
+	}
+
+	// ---- Cast 1 (old) ----
+	h.setTxID("tx-old")
+	ack1, err := h.cc.RecordVote(
+		h.ctx,
+		"S-001",
+		testConst,
+		testCand1,
+		hexEncOneGood,
+		"salt-1", // kept for backward compatibility; ignored on-chain
+		testEpoch,
+		testAttestOK,
+		testBoothID, testDeviceID, testDeviceFP,
+		"", "", "", "",
+	)
+	requireNoErr(t, err)
+
+	var r1 voteResp
+	requireNoErr(t, json.Unmarshal([]byte(ack1), &r1))
+	qrOld := makeSealedQRPayload(t, kioskKey, r1.TxID, r1.Serial, r1.HC, r1.Epoch, testCand1)
+
+	// ---- Cast 2 (new) ----
+	h.setTxID("tx-new")
+	ack2, err := h.cc.RecordVote(
+		h.ctx,
+		"S-001",
+		testConst,
+		testCand2,
+		hexEncOneGood,
+		"salt-2", // kept for backward compatibility; ignored on-chain
+		testEpoch,
+		testAttestOK,
+		testBoothID, testDeviceID, testDeviceFP,
+		"", "", "", "",
+	)
+	requireNoErr(t, err)
+
+	var r2 voteResp
+	requireNoErr(t, json.Unmarshal([]byte(ack2), &r2))
+	qrNew := makeSealedQRPayload(t, kioskKey, r2.TxID, r2.Serial, r2.HC, r2.Epoch, testCand2)
+
+	// ---- Close and mark current vote (tx-new) ----
+	requireNoErr(t, h.closePoll())
+	_, err = h.cc.TallyPrepare(h.ctx, testConst)
+	requireNoErr(t, err)
+
+	// ApplyBallotStatuses also creates the TXIDX mapping used by VerifyReceipt.
+	statusJSON := fmt.Sprintf(`{"current":[{"serial":"%s","txID":"%s","encOneHex":"%s"}],"invalid":[]}`, "S-001", "tx-new", hexEncOneGood)
+	requireNoErr(t, h.cc.ApplyBallotStatuses(h.ctx, testConst, statusJSON))
+
+	// ---- Kiosk decrypts QR choice and checks the receipt on-ledger ----
+
+	// Latest QR must decrypt and verify as current.
+	envNew, choiceNew := kioskOpenSealedQRPayload(t, kioskKey, qrNew)
+	if choiceNew != testCand2 {
+		t.Fatalf("latest QR choice mismatch: got=%q want=%q", choiceNew, testCand2)
+	}
+	vrNew, err := h.cc.VerifyReceipt(h.ctx, envNew.TxID, envNew.HC)
+	requireNoErr(t, err)
+	if !strings.Contains(vrNew, `"ok":true`) {
+		t.Fatalf("expected latest receipt ok=true; got: %s", vrNew)
+	}
+
+	// Old QR must still decrypt (kiosk can show the voter what they cast at that time),
+	// but receipt verification must fail because the ballot was superseded (tx-old no longer indexed as current).
+	envOld, choiceOld := kioskOpenSealedQRPayload(t, kioskKey, qrOld)
+	if choiceOld != testCand1 {
+		t.Fatalf("old QR choice mismatch: got=%q want=%q", choiceOld, testCand1)
+	}
+	vrOld, err := h.cc.VerifyReceipt(h.ctx, envOld.TxID, envOld.HC)
+	requireNoErr(t, err)
+	if !strings.Contains(vrOld, `"ok":false`) || !strings.Contains(vrOld, `"reason":"unknown_tx"`) {
+		t.Fatalf("expected old receipt ok=false with reason=unknown_tx; got: %s", vrOld)
+	}
+}
+
+type sealedQREnvelope struct {
+	V      int    `json:"v"`
+	TxID   string `json:"txID"`
+	Serial string `json:"serial"`
+	HC     string `json:"hC"`
+	Epoch  string `json:"epoch"`
+	Nonce  string `json:"nonce"`
+	Sealed string `json:"sealed"`
+}
+
+func makeSealedQRPayload(t *testing.T, kioskKey []byte, txID, serial, hC, epoch, candidateID string) string {
+	t.Helper()
+
+	block, err := aes.NewCipher(kioskKey)
+	if err != nil {
+		t.Fatalf("aes.NewCipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("cipher.NewGCM: %v", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("rand.Read(nonce): %v", err)
+	}
+
+	// Bind the sealed choice to the public receipt fields to prevent cut-and-paste substitution.
+	aad := []byte(txID + "|" + serial + "|" + hC + "|" + epoch)
+	ct := gcm.Seal(nil, nonce, []byte(candidateID), aad)
+
+	env := sealedQREnvelope{
+		V:      1,
+		TxID:   txID,
+		Serial: serial,
+		HC:     hC,
+		Epoch:  epoch,
+		Nonce:  b64url(nonce),
+		Sealed: b64url(ct),
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("json.Marshal(sealedQREnvelope): %v", err)
+	}
+	return string(b)
+}
+
+func kioskOpenSealedQRPayload(t *testing.T, kioskKey []byte, qrPayload string) (sealedQREnvelope, string) {
+	t.Helper()
+
+	var env sealedQREnvelope
+	if err := json.Unmarshal([]byte(qrPayload), &env); err != nil {
+		t.Fatalf("json.Unmarshal(qrPayload): %v", err)
+	}
+
+	nonce, err := b64urlDecode(env.Nonce)
+	if err != nil {
+		t.Fatalf("b64urlDecode(nonce): %v", err)
+	}
+	ct, err := b64urlDecode(env.Sealed)
+	if err != nil {
+		t.Fatalf("b64urlDecode(sealed): %v", err)
+	}
+
+	block, err := aes.NewCipher(kioskKey)
+	if err != nil {
+		t.Fatalf("aes.NewCipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("cipher.NewGCM: %v", err)
+	}
+
+	aad := []byte(env.TxID + "|" + env.Serial + "|" + env.HC + "|" + env.Epoch)
+	pt, err := gcm.Open(nil, nonce, ct, aad)
+	if err != nil {
+		t.Fatalf("gcm.Open: %v", err)
+	}
+
+	return env, string(pt)
+}
+
+func b64urlDecode(s string) ([]byte, error) {
+	return base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(s)
 }

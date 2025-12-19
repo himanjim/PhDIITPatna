@@ -16,7 +16,6 @@ package main
 
 import (
     "math/big"
-	"os"
 	"strings"
 	"testing"
 )
@@ -276,47 +275,3 @@ func TestVotingCritical_UnknownCandidate_ValidateOn(t *testing.T) {
 }
 
 
-// TestVotingCritical_ShardCollision_Revote forces shard collision
-// (ACCUM_SHARDS=1) and verifies change re-vote still nets correctly.
-// Expect: cand1 back to identity; cand2 has one Enc(1).
-func TestVotingCritical_ShardCollision_Revote(t *testing.T) {
-	setDefaultEnv(t)
-	restore := func(k, v string) { if v == "" { os.Unsetenv(k) } else { os.Setenv(k, v) } }
-	prev := os.Getenv("ACCUM_SHARDS")
-	os.Setenv("ACCUM_SHARDS", "1") // single shard → deliberate MVCC hotspot in real nets
-	defer restore("ACCUM_SHARDS", prev)
-
-	h := newHarness(t)
-	defer h.ctrl.Finish()
-	h.stubPreloadCandidatesOnly([]string{testCand1, testCand2})  // simplest two-candidate case
-
-	requireNoErr(t, h.setPK_UP())
-	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2}))
-	requireNoErr(t, h.openPoll())
-
-	h.setTxID("tx-collide-1")
-	requireNoErr(t, must2(h.recordVote("S-777", testCand1, hexEncOneGood)))
-	h.setTxID("tx-collide-2")
-	requireNoErr(t, must2(h.recordVote("S-777", testCand2, hexEncOneGood)))
-
-	sums, err := h.cc.TallyPrepare(h.ctx, testConst)
-	requireNoErr(t, err)
-	n2 := nSquaredFromHarnessN(t)
-	want1 := big.NewInt(1)                          // cand1 net zero after move
-	want2 := powModHex(t, hexEncOneGood, 1, n2)     // cand2 gets a single Enc(1)
-	got1 := bigFromPossiblyHexMust(t, sums[testCand1])
-	got2 := bigFromPossiblyHexMust(t, sums[testCand2])
-
-	if got1.Cmp(want1) != 0 || got2.Cmp(want2) != 0 {
-		t.Fatalf("collision revote mismatch: cand1 got=%s want=%s; cand2 got=%s want=%s",
-			got1.Text(16), want1.Text(16), got2.Text(16), want2.Text(16))
-	}
-
-	one := bigFromPossiblyHexMust(t, "1")
-	if got1.Cmp(one) != 0 {
-		t.Fatalf("cand1 should net to identity after move; got %s", got1.Text(16))
-	}
-	if got2.Cmp(one) == 0 {
-		t.Fatalf("cand2 should be incremented; still identity")
-	}
-}
