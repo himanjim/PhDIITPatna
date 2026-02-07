@@ -1,0 +1,25 @@
+﻿# dependencies
+node_modules/
+
+# build output (rebuildable)
+dist/
+
+# local temp / OS
+.DS_Store
+Thumbs.db
+
+# perf raw run-by-run artefacts (bloat)
+perf/ballot_*.json
+perf/cast_*.json
+perf/liveness_*.json
+perf/start*.json
+
+# face stills must never be committed
+perf/stills/
+
+# ad-hoc local lighthouse dumps at repo root
+*.report.html
+
+# temp binary outputs used during compression experiments
+a+x.*
+x.ext

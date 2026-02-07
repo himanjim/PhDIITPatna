@@ -1,0 +1,11 @@
+﻿Ballot payload (compressed download):
+  p50 = 0.2 KB, p95 = 0.2 KB, max = 0.2 KB
+
+Liveness still JPEG bytes (per still; 320x320, JPEG q=0.6):
+  p50 = 9.0 KB, p95 = 9.1 KB, max = 9.1 KB
+
+Liveness upload (HTTP upload bytes; includes JSON/base64 overhead):
+  p50 = 35.8 KB, p95 = 35.8 KB, max = 35.8 KB
+
+Cast confirmation time (API /vote/cast time_total):
+  p50 = 0.00 s, p95 = 0.00 s, max = 0.00 s

@@ -1,0 +1,52 @@
+{
+  "files": [
+    {
+      "file": "dist/index.html",
+      "ext": ".html",
+      "raw": 1062,
+      "gzip": 605,
+      "brotli": 419
+    },
+    {
+      "file": "dist/assets/index-CLj9NKDE.js",
+      "ext": ".js",
+      "raw": 70761,
+      "gzip": 25896,
+      "brotli": 22250
+    },
+    {
+      "file": "dist/assets/index-QIT2TwcH.css",
+      "ext": ".css",
+      "raw": 2248,
+      "gzip": 1015,
+      "brotli": 863
+    }
+  ],
+  "totals": {
+    "html": {
+      "raw": 1062,
+      "gzip": 605,
+      "brotli": 419
+    },
+    "js": {
+      "raw": 70761,
+      "gzip": 25896,
+      "brotli": 22250
+    },
+    "css": {
+      "raw": 2248,
+      "gzip": 1015,
+      "brotli": 863
+    },
+    "other": {
+      "raw": 0,
+      "gzip": 0,
+      "brotli": 0
+    },
+    "all": {
+      "raw": 74071,
+      "gzip": 27516,
+      "brotli": 23532
+    }
+  }
+}
