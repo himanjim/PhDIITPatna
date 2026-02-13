@@ -1,14 +1,14 @@
-// voting_test.go
+// Voting_test.go
 //
 // Purpose: Tests for the vote-casting path of AccumVoteContract: preconditions,
-//          first-vote behavior, re-vote semantics, input validation, and a light
-//          state-ops budget sanity check.
-// Role:    Exercises RecordVote + TallyPrepare via the in-memory harness (no real Fabric),
-//          using cc2cc stubs for candidate list. Focus is on correctness signals
-//          (accept/reject, accumulator effects) rather than throughput.
+// First-vote behavior, re-vote semantics, input validation, and a light
+// State-ops budget sanity check.
+// Role: Exercises RecordVote + TallyPrepare via the in-memory harness (no real Fabric),
+// Using cc2cc stubs for candidate list. Focus is on correctness signals
+// (accept/reject, accumulator effects) rather than throughput.
 // Key dependencies: newHarness/memWorld test harness, AccumVoteContract, helper
-//          functions like requireNoErr/requireErrContains, and constants such as
-//          testCand1..4, hexEncOneGood.
+// Functions like requireNoErr/requireErrContains, and constants such as
+// TestCand1..4, hexEncOneGood.
 
 package main
 
@@ -19,14 +19,14 @@ import (
 
 const testSerial = "S-001"
 
-// normHex normalizes a hex string for equality checks.
+// NormHex normalizes a hex string for equality checks.
 // Params: s — input hex string (may include 0x).
 // Returns: canonical lowercase hex with even length (via canonHex).
 func normHex(s string) string {
 	return canonHex(s)
 }
 
-// canonHex normalizes hex for comparisons: drop 0x, lowercase, and left-pad to even length.
+// CanonHex normalizes hex for comparisons: drop 0x, lowercase, and left-pad to even length.
 // Params: s — input string like "0x1", "A", "0a".
 // Returns: normalized hex string suitable for direct string compare.
 func canonHex(s string) string {
@@ -37,7 +37,7 @@ func canonHex(s string) string {
     return s
 }
 
-// asIdentityIfBlank maps contract identity renderings to "1" for easier assertions.
+// AsIdentityIfBlank maps contract identity renderings to "1" for easier assertions.
 // Params: s — value returned from chaincode (may be "", "0", "0x0").
 // Returns: "1" when s is an identity-like string; otherwise returns s unchanged.
 func asIdentityIfBlank(s string) string {
@@ -48,32 +48,27 @@ func asIdentityIfBlank(s string) string {
     return s
 }
 
-// TestVoting_PKMissingReject verifies that casting fails when the Paillier public
-// key has not been set for the caller's state.
-// Params: t — testing handle.
-// Returns: none; fails if the error does not mention missing public key.
+// TestVoting_PKMissingReject verifies: Voting P K Missing Reject.
 func TestVoting_PKMissingReject(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t)
 
 	h := newHarness(t)
 	defer h.ctrl.Finish()
 
 	cands := []string{testCand1, testCand2}
-	h.stubPreloadCandidatesOnly(cands) // only candidate list needed; voter table irrelevant here
-	//requireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
-	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2, testCand3, testCand4})) // seed more than used; harmless
+	h.stubPreloadCandidatesOnly(cands) // Only candidate list needed; voter table irrelevant here
+	// RequireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
+	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2, testCand3, testCand4})) // Seed more than used; harmless
 
 	requireNoErr(t, h.openPoll())
 	_, err := h.recordVote(testSerial, testCand1, hexEncOneGood)
-	requireErrContains(t, err, "public key") // contract error text: "public key for state ... not set"
+	requireErrContains(t, err, "public key") // Contract error text: "public key for state ... not set"
 }
 
-// TestVoting_PollClosedReject ensures casting is refused when the poll is closed.
-// Params: t — testing handle.
-// Returns: none; expects a "closed" error string.
+// TestVoting_PollClosedReject verifies: Voting Poll Closed Reject.
 func TestVoting_PollClosedReject(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t)
 
 	h := newHarness(t)
@@ -81,19 +76,16 @@ func TestVoting_PollClosedReject(t *testing.T) {
 
 	cands := []string{testCand1, testCand2}
 	h.stubPreloadCandidatesOnly(cands)
-	//requireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
+	// RequireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
 	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2, testCand3, testCand4}))
 
 	requireNoErr(t, h.setPK_UP())  // PK must exist for a clean "closed" rejection
-	requireNoErr(t, h.closePoll()) // explicit close to trigger guard
+	requireNoErr(t, h.closePoll()) // Explicit close to trigger guard
 	_, err := h.recordVote(testSerial, testCand1, hexEncOneGood)
 	requireErrContains(t, err, "closed")
 }
 
-// TestVoting_FirstVotePlusOne checks that the very first valid vote contributes
-// a single Enc(1) to the chosen candidate’s accumulator.
-// Params: t — testing handle.
-// Returns: none; compares enc sums after one cast.
+// TestVoting_FirstVotePlusOne verifies: Voting First Vote Plus One.
 func TestVoting_FirstVotePlusOne(t *testing.T) {
 	setProdEnv(t)
 
@@ -122,10 +114,7 @@ func TestVoting_FirstVotePlusOne(t *testing.T) {
 	}
 }
 
-// TestVoting_SameCandidateRevote_NoOp asserts idempotence: re-voting the same
-// candidate leaves totals as +1 for that candidate, identity for others.
-// Params: t — testing handle.
-// Returns: none.
+// TestVoting_SameCandidateRevote_NoOp verifies: Voting Same Candidate Revote No Op.
 func TestVoting_SameCandidateRevote_NoOp(t *testing.T) {
 	setProdEnv(t)
 
@@ -162,10 +151,7 @@ func TestVoting_SameCandidateRevote_NoOp(t *testing.T) {
 	}
 }
 
-// TestVoting_ChangeRevote_MoveBetweenCandidates verifies latest-wins: changing
-// your choice moves the +1 from old to new candidate.
-// Params: t — testing handle.
-// Returns: none.
+// TestVoting_ChangeRevote_MoveBetweenCandidates verifies: Voting Change Revote Move Between Candidates.
 func TestVoting_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	setProdEnv(t)
 
@@ -201,11 +187,9 @@ func TestVoting_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	}
 }
 
-// TestVoting_BadEncOne_Reject_NonHex checks input validation: encOne must be valid hex.
-// Params: t — testing handle.
-// Returns: none; expects error mentioning "hex".
+// TestVoting_BadEncOne_Reject_NonHex verifies: Voting Bad Enc One Reject Non Hex.
 func TestVoting_BadEncOne_Reject_NonHex(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t)
 
 	h := newHarness(t)
@@ -213,20 +197,18 @@ func TestVoting_BadEncOne_Reject_NonHex(t *testing.T) {
 
 	cands := []string{testCand1, testCand2}
 	h.stubPreloadCandidatesOnly(cands)
-	//requireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
+	// RequireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
 	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2, testCand3, testCand4}))
 
 	requireNoErr(t, h.setPK_UP())
 	requireNoErr(t, h.openPoll())
-	_, err := h.recordVote(testSerial, testCand1, "zzzz") // intentionally invalid hex
+	_, err := h.recordVote(testSerial, testCand1, "zzzz") // Intentionally invalid hex
 	requireErrContains(t, err, "hex")
 }
 
-// TestVoting_BadEncOne_Reject_OutOfRange verifies encOne range checks: c must be in (1, n²).
-// Params: t — testing handle.
-// Returns: none; expects error mentioning "range".
+// TestVoting_BadEncOne_Reject_OutOfRange verifies: Voting Bad Enc One Reject Out Of Range.
 func TestVoting_BadEncOne_Reject_OutOfRange(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t)
 
 	h := newHarness(t)
@@ -234,21 +216,18 @@ func TestVoting_BadEncOne_Reject_OutOfRange(t *testing.T) {
 
 	cands := []string{testCand1, testCand2}
 	h.stubPreloadCandidatesOnly(cands)
-	//requireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
+	// RequireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
 	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2, testCand3, testCand4}))
 
 	requireNoErr(t, h.setPK_UP())
 	requireNoErr(t, h.openPoll())
-	_, err := h.recordVote(testSerial, testCand1, "0x01") // boundary: not strictly >1
+	_, err := h.recordVote(testSerial, testCand1, "0x01") // Boundary: not strictly >1
 	requireErrContains(t, err, "range")
 }
 
-// TestVoting_StateOpsBudget_ChangeRevote is a coarse sanity check that a change
-// re-vote doesn’t blow up world-state/PDC operations in the in-mem harness.
-// Params: t — testing handle.
-// Returns: none; enforces lenient thresholds to catch regressions.
+// TestVoting_StateOpsBudget_ChangeRevote verifies: Voting State Ops Budget Change Revote.
 func TestVoting_StateOpsBudget_ChangeRevote(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t)
 
 	h := newHarness(t)
@@ -256,7 +235,7 @@ func TestVoting_StateOpsBudget_ChangeRevote(t *testing.T) {
 
 	cands := []string{testCand1, testCand2}
 	h.stubPreloadCandidatesOnly(cands)
-	//requireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
+	// RequireNoErr(t, h.cc.RefreshCandidateListFromPreload(h.ctx, testConst))
 	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2, testCand3, testCand4}))
 
 	requireNoErr(t, h.setPK_UP())
@@ -276,7 +255,7 @@ func TestVoting_StateOpsBudget_ChangeRevote(t *testing.T) {
 	requireNoErr(t, err)
 
 	// These ceilings are intentionally forgiving — goal is to catch accidental
-	// extra reads/writes, not micro-optimize.
+	// Extra reads/writes, not micro-optimize.
 	if h.mem.opsCounts.getPDC > 1 || h.mem.opsCounts.putPDC > 1 {
 		t.Fatalf("PDC ops too high: get=%d put=%d", h.mem.opsCounts.getPDC, h.mem.opsCounts.putPDC)
 	}
