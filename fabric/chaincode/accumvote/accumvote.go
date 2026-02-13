@@ -1,31 +1,27 @@
 // -----------------------------------------------------------------------------
-// accumvote_cc contract (Go, Fabric v3.1.1)
+// Accumvote_cc contract (Go, Fabric v3.1.1)
 // Purpose: Implements a high-TPS, privacy-preserving vote accumulator using
 // Paillier Enc(1) multiplication and “latest-vote-wins”, with validation at tally.
 // Role in system: Write-path records a kiosk’s latest vote pointer into a PDC and
-// minimal public kiosk metadata; read-path/tally composes encrypted sums and
-// marks invalid votes (non-existent voters/booths, bad ciphertexts) for exclusion.
+// Minimal public kiosk metadata; read-path/tally composes encrypted sums and
+// Marks invalid votes (non-existent voters/booths, bad ciphertexts) for exclusion.
 // Key dependencies: Hyperledger Fabric contractapi/cid; a canonical preload
-// chaincode (“evote-preload”) for voters/candidates; a booth registry CC
+// Chaincode (“evote-preload”) for voters/candidates; a booth registry CC
 // (“boothpdc”) for booth/device windows; private data collection “votes_pdc”.
 // -----------------------------------------------------------------------------
 
 /*
-accumvote_cc (Fabric v3.1.1) — homomorphic accumulators + re-vote
+accumvote.go — Hyperledger Fabric chaincode for the AccumVote prototype.
 
-Hot path (TPS focus):
-• RecordVote(serial, constituencyID, candidateID, encOneHex, receiptSalt, epoch, attestationSig)
-– ABAC (role=voterMachine; state/const match)
-– (Optional) attestationSig check (can be fixed string during Caliper)
-– Enc(1) sanity (range + gcd)
-– Same-candidate re-vote is a no-op (idempotent)
-– Update PDC (latest choice); kiosk meta write is toggleable
+This contract supports a re-voting model (latest vote wins per serial) and a
+privacy-preserving receipt flow:
+- Votes are stored in a private data collection under VOTE::<const>::<serial>.
+- Public ballot metadata is stored under BAL::<serial> with a receipt hash (hC).
+- TXIDX::<txID> is maintained only for ballots marked Current, so tx-based receipt
+  checks do not leak re-vote history.
 
-Cold path (no private keys on-chain):
-• TallyPrepare(constituencyID) – combine votes → encrypted sums
-• PublishResults(constituencyID, roundID, ...) – anchor off-chain results + proof-bundle hash
-• SummarizeInvalids / ApplyCorrections – homomorphic back-out of invalids post-close
-
+The chaincode does not expose any HTTP endpoints. A separate gateway/service is
+expected to invoke these contract functions and subscribe to emitted events.
 */
 package main
 
@@ -34,35 +30,35 @@ import (
 "crypto/sha256"
 "encoding/hex"
 "encoding/json"
-//"errors"
+// "errors"
 "fmt"
 "math/big"
-//"os"
+// "os"
 "sort"
 "strings"
 "time"
 "reflect"
 "strconv"
-//"github.com/hyperledger/fabric-chaincode-go/v2/pkg/cid"
+// "github.com/hyperledger/fabric-chaincode-go/v2/pkg/cid"
 "github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
 "sync"
 )
 
-/* ---------- Keys & constants (single namespace for this chaincode) ---------- */
+/* Keys & constants (single namespace for this chaincode) */
 
 const (
 // Collections
 votesPDC = "votes_pdc"
 
 // World state prefixes (public)
-keyPKPrefix       = "PK::"       // PK::<state>                 → PublicKey JSON (Paillier)
-keyBallotPrefix   = "BAL::"      // BAL::<serial>               → BallotMeta for kiosk (no identity)
-keyPollPrefix     = "POLL::"     // POLL::<const>               → "open"/"closed"
-keyParams         = "PARAMS"     // global Params JSON
-keyCandsListPrefx = "CANDLIST::" // CANDLIST::<const>           → []string (local copy)
-keyResultsPrefix  = "RES::"      // RES::<const>::<roundID>     → anchored results
+keyPKPrefix       = "PK::"       // PK::<state> → PublicKey JSON (Paillier)
+keyBallotPrefix   = "BAL::"      // BAL::<serial> → BallotMeta for kiosk (no identity)
+keyPollPrefix     = "POLL::"     // POLL::<const> → "open"/"closed"
+keyParams         = "PARAMS"     // Global Params JSON
+keyCandsListPrefx = "CANDLIST::" // CANDLIST::<const> → []string (local copy)
+keyResultsPrefix  = "RES::"      // RES::<const>::<roundID> → anchored results
 
-keyTxIdxPrefix = "TXIDX::"          // txID → serial (for VerifyReceipt)
+keyTxIdxPrefix = "TXIDX::"          // TxID → serial (for VerifyReceipt)
 )
 
 const (
@@ -80,11 +76,22 @@ eventInvalidCandidateFound = "InvalidCandidateFound"
 eventInvalidBoothFound = "InvalidBoothFound"
 )
 
-/* ------------------------- Types & small data models ------------------------ */
+/* Types & small data models */
 
+// AccumVoteContract implements the Fabric contract for the Internet voting prototype.
+//
+// Responsibilities:
+// - Accept high-throughput vote submissions (RecordVote) into a private data collection.
+// - Maintain a public, serial-indexed ballot status record for receipt checks and auditing.
+// - Produce homomorphic encrypted tallies and publish result anchors for public verification.
 type AccumVoteContract struct{ contractapi.Contract }
 
-// Paillier public key (hex). n2 may be omitted (we compute n^2).
+// PublicKey stores the Paillier public key material and public ceremony anchors.
+//
+// The key is written to PK::<state> and includes:
+// - Paillier parameters (n, g, n^2)
+// - Ceremony anchors (h1, transcriptURI) so auditors can link the ledger to the key ceremony.
+// - A deterministic digest (pkDigest) for quick integrity checks.
 type PublicKey struct {
 N  string `json:"n"`
 G  string `json:"g"`
@@ -92,14 +99,16 @@ N2 string `json:"n2,omitempty"`
 
 }
 
-// VoteMetaPDC is stored in the private collection.
-// We now persist *every* cast, and also store a "latest pointer" under votes::<const>::<serial>.
+// VoteMetaPDC is the private vote record stored in the votes private data collection.
+//
+// It intentionally contains the minimum fields required for tallying and audit linkage.
+// Sensitive/identifying information must NOT be stored here.
 type VoteMetaPDC struct {
     CandidateID string `json:"candidateID"`
     // New fields for append-only audit + tally reconstruction:
     EncOneHex string `json:"encOneHex"`           // Paillier Enc(1;r) as hex
-    Epoch     string `json:"epoch,omitempty"`     // logical revote epoch (string to avoid int64 JSON ambiguity)
-    TxID      string `json:"txID"`                // tx that wrote this record (unique per cast)
+    Epoch     string `json:"epoch,omitempty"`     // Logical revote epoch (string to avoid int64 JSON ambiguity)
+    TxID      string `json:"txID"`                // Tx that wrote this record (unique per cast)
     CastTime  string `json:"castTime,omitempty"`  // RFC3339 (optional)
 	
 	 // NEW – for booth/device validation at tally:
@@ -109,17 +118,21 @@ type VoteMetaPDC struct {
     DeviceKeyFP string `json:"deviceKeyFP,omitempty"`
 	
 	 // New: encrypted facial embedding (simple, optional)
-    BioAlg       string `json:"bioAlg,omitempty"`       // e.g., "AES-256-GCM"
-    BioNonceB64  string `json:"bioNonceB64,omitempty"`  // base64(nonce)
-    BioCipherB64 string `json:"bioCipherB64,omitempty"` // base64(ciphertext||tag)
-    BioTagHex    string `json:"bioTagHex,omitempty"`    // optional HMAC link tag (hex)
+    BioAlg       string `json:"bioAlg,omitempty"`       // E.g., "AES-256-GCM"
+    BioNonceB64  string `json:"bioNonceB64,omitempty"`  // Base64(nonce)
+    BioCipherB64 string `json:"bioCipherB64,omitempty"` // Base64(ciphertext||tag)
+    BioTagHex    string `json:"bioTagHex,omitempty"`    // Optional HMAC link tag (hex)
 
     // New: device signature (base64 or hex; you decide upstream)
     DevSigB64    string `json:"devSigB64,omitempty"`
 }
 
 
-// Public kiosk/meta: ties a serial to THIS tx’s ciphertext via hC = SHA256(encOneHex).
+// BallotMeta is the public per-serial metadata used for receipt verification and audit trails.
+//
+// Stored at BAL::<serial>.
+// - Status transitions are applied by ApplyBallotStatuses.
+// - HC is a hash of encOneHex and is the only value needed to validate a voter receipt.
 type BallotMeta struct {
 HC       string `json:"hC"`
 Status   string `json:"status"`   // "current"
@@ -129,7 +142,13 @@ TxID     string `json:"txID"`
 
 }
 
-// Published result anchor (plaintext + hash of proof bundle, both produced off-chain).
+// TallyResultAnchor is the public on-chain anchor for a published result.
+//
+// It binds:
+// - the plaintext results JSON,
+// - a hash of the canonical results package (h_TVP), and
+// - the trustee bundle hash (bundleHash).
+// This is what the public dashboard and external auditors verify.
 type TallyResultAnchor struct {
 RoundID      string          `json:"roundID"`
 Constituency string          `json:"constituency"`
@@ -139,17 +158,20 @@ BundleHash   string          `json:"bundleHash"`
 
 }
 
-// On-ledger tuning knobs. Env vars can override at runtime inside chaincode container.
+// Params contains runtime toggles and limits used by the contract.
+//
+// Values are stored on-chain (PARAMS::<scope>) and cached for performance.
+// In tests/benchmarks, env vars may override or bypass some checks.
 type Params struct {
-VerifyAttestation bool   `json:"VERIFY_ATTESTATION"`  // accept non-empty/fixed value
-EmitEvents        bool `json:"EMIT_EVENTS"`        // default true: emit events
+VerifyAttestation bool   `json:"VERIFY_ATTESTATION"`  // Accept non-empty/fixed value
+EmitEvents        bool `json:"EMIT_EVENTS"`        // Default true: emit events
 
-ValidateOnTally bool   `json:"VALIDATE_ON_TALLY"` // default false: run eligibility at tally-time
+ValidateOnTally bool   `json:"VALIDATE_ON_TALLY"` // Default false: run eligibility at tally-time
 
-PreloadCCName string `json:"PRELOAD_CC_NAME"` // single source of truth CC for candidates/voters
+PreloadCCName string `json:"PRELOAD_CC_NAME"` // Single source of truth CC for candidates/voters
 
-BoothCCName        string `json:"BOOTH_CC_NAME"`         // default "boothpdc"
-ValidateBoothOnTally bool `json:"VALIDATE_BOOTH_ON_TALLY"` // default true
+BoothCCName        string `json:"BOOTH_CC_NAME"`         // Default "boothpdc"
+ValidateBoothOnTally bool `json:"VALIDATE_BOOTH_ON_TALLY"` // Default true
 }
 
 
@@ -161,21 +183,20 @@ type boothRec struct {
     DeviceKeyFingerprint string `json:"device_key_fingerprint"`
 }
 
-// cache parsed Paillier keys per state (thread-safe)
-var pkCache sync.Map // key: state -> pkEntry
+// Cache parsed Paillier keys per state (thread-safe)
+var pkCache sync.Map // Key: state -> pkEntry
 
 type pkEntry struct {
     n  *big.Int
     n2 *big.Int
-    // g is unused on-chain; you can add it if you later need it
+    // G is unused on-chain; you can add it if you later need it
 }
 
 
-/* ------------------------------ Small helpers ------------------------------ */
+/* Small helpers */
 
-// getBoothViaCC asks the booth registry chaincode for a booth row.
-// params: boothCC/stateCode/constituencyID/boothID identify the booth.
-// returns: parsed boothRec or error when CC2CC fails or JSON is malformed.
+// getBoothViaCC queries the booth/device registry chaincode (boothpdc) for booth metadata.
+// This is used to validate whether a device is authorised and within its voting window.
 func getBoothViaCC(ctx contractapi.TransactionContextInterface, boothCC, stateCode, constituencyID, boothID string) (*boothRec, error) {
     if strings.TrimSpace(boothID) == "" { return nil, fmt.Errorf("empty booth") }
     payload, err := callPreload(ctx, boothCC, "GetBooth", stateCode, constituencyID, boothID)
@@ -185,47 +206,40 @@ func getBoothViaCC(ctx contractapi.TransactionContextInterface, boothCC, stateCo
     return &br, nil
 }
 
-// castTimeWithin checks whether vmCastRFC3339 falls inside [open, close] (epoch seconds).
-// params: RFC3339 timestamp and booth open/close epoch seconds.
-// return: true if within; fail-soft true when any time is missing or unparsable.
+// castTimeWithin checks that a RFC3339 timestamp falls within an allowed window.
+// The window values are typically sourced from the booth/device registry.
 func castTimeWithin(vmCastRFC3339 string, open, close int64) bool {
-    if vmCastRFC3339 == "" || open == 0 || close == 0 { return true } // fail-soft
+    if vmCastRFC3339 == "" || open == 0 || close == 0 { return true } // Fail-soft
     ct, err := time.Parse(time.RFC3339, vmCastRFC3339)
-    if err != nil { return true } // fail-soft
+    if err != nil { return true } // Fail-soft
     t := ct.Unix()
     return t >= open && t <= close
 }
 
-// boothDeviceOK enforces optional device binding checks from booth record.
-// params: vote meta (device fields) and boothRec (expected device IDs).
-// return: false if booth specifies a value and it mismatches; otherwise true.
+// boothDeviceOK verifies that a booth record authorises the given device for voting.
+// It also enforces any time window constraints configured for the booth.
 func boothDeviceOK(vm *VoteMetaPDC, br *boothRec) bool {
-    // only enforce if booth row provided a value
+    // Only enforce if booth row provided a value
     if br.DeviceID != "" && vm.DeviceID != "" && br.DeviceID != vm.DeviceID { return false }
     if br.DeviceKeyFingerprint != "" && vm.DeviceKeyFP != "" && br.DeviceKeyFingerprint != vm.DeviceKeyFP { return false }
     return true
 }
 
-// nowRFC3339 returns current tx timestamp as RFC3339 string.
-// params: ctx for Fabric tx timestamp.
-// return: RFC3339 in UTC.
+// nowRFC3339 returns the transaction timestamp as an RFC3339 UTC string.
 func nowRFC3339(ctx contractapi.TransactionContextInterface) string {
     ts, _ := ctx.GetStub().GetTxTimestamp()
     return time.Unix(ts.Seconds, int64(ts.Nanos)).UTC().Format(time.RFC3339)
 }
 
-// sha256Hex returns hex(SHA256(b)).
-// params: byte slice.
-// return: lowercase hex digest.
+// sha256Hex returns the SHA-256 hash of a byte slice, hex-encoded.
 func sha256Hex(b []byte) string {
 h := sha256.Sum256(b)
 return hex.EncodeToString(h[:])
 }
+// sha256HexStr returns the SHA-256 hash of a string, hex-encoded.
 func sha256HexStr(s string) string { return sha256Hex([]byte(s)) }
 
-// bigFromHex parses hex (with/without 0x) or base-10 string into big.Int.
-// params: string s.
-// return: *big.Int or error with clear message for bad inputs.
+// bigFromHex parses a hex string (with or without 0x) into a big.Int.
 func bigFromHex(s string) (*big.Int, error) {
     s = strings.TrimSpace(s)
     if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
@@ -240,41 +254,36 @@ func bigFromHex(s string) (*big.Int, error) {
     if z, ok := new(big.Int).SetString(s, 10); ok {
         return z, nil
     }
-    // include the word "hex" so tests match
+    // Include the word "hex" so tests match
     return nil, fmt.Errorf("bad hex integer: %q", s)
 }
 
 
-// hexFromBig renders big.Int as canonical lowercase hex (no leading zeros).
-// params: x big.Int.
-// return: "0" for zero; hex string otherwise.
+// hexFromBig encodes a big.Int as lowercase hex without 0x and without leading zeros.
 func hexFromBig(x *big.Int) string {
 	if x == nil || x.Sign() == 0 {
 		return "0"
 	}
 	// Use canonical lowercase hex with NO leading zeros.
-	s := strings.ToLower(x.Text(16)) // textual hex, never padded
-	s = strings.TrimLeft(s, "0")     // drop any stray leading zeros (paranoia)
-	if s == "" {                     // if x==0, after trim we normalize to "0"
+	s := strings.ToLower(x.Text(16)) // Textual hex, never padded
+	s = strings.TrimLeft(s, "0")     // Drop any stray leading zeros (paranoia)
+	if s == "" {                     // If x==0, after trim we normalize to "0"
 		return "0"
 	}
 	return s
 }
 
-// canonHexStr reparses s and re-emits canonical hex; returns s unchanged on parse failure.
-// params: hex/decimal string.
-// return: canonical hex string.
+// canonHexStr normalises a hex string to lowercase and removes leading zeros.
 func canonHexStr(s string) string {
     x, err := bigFromHex(s)
-    if err != nil { // if it's not a valid hex/int, just return as-is
+    if err != nil { // If it's not a valid hex/int, just return as-is
         return s
     }
     return hexFromBig(x)
 }
 
-// canonHexMap canonicalizes all values in a map in-place.
-// params: map[string]string.
-// return: none (mutates input map).
+// canonHexMap canonicalises all hex string values in a map.
+// This is used so public hashes are reproducible across clients.
 func canonHexMap(m map[string]string) {
     for k, v := range m {
         m[k] = canonHexStr(v)
@@ -282,18 +291,16 @@ func canonHexMap(m map[string]string) {
 }
 
 
-// mulMod computes (x*y) % mod using big.Int to avoid overflow.
-// params: x,y,mod.
-// return: result big.Int pointer (new allocation).
+// mulMod returns (a*b) mod m.
+// Note: hot paths use in-place operations to reduce allocations; keep this for clarity where used.
 func mulMod(x, y, mod *big.Int) *big.Int {
 z := new(big.Int).Mul(x, y)
 return z.Mod(z, mod)
 }
 
 
-// loadPK reads the Paillier public key for a state from WS and parses n, g, n².
-// params: ctx, state string.
-// return: (n, g, n2) or error if state row missing or malformed.
+// loadPK loads the Paillier public key for a state.
+// It uses an in-memory cache to avoid repeated parsing of large integers.
 func loadPK(ctx contractapi.TransactionContextInterface, state string) (*big.Int, *big.Int, *big.Int, error) {
 raw, err := ctx.GetStub().GetState(keyPKPrefix + state)
 if err != nil {
@@ -326,9 +333,8 @@ g, _ = bigFromHex(pk.G)
 return n, g, n2, nil
 }
 
-// getParams returns the active parameter set (defaults overlaid by on-ledger PARAMS).
-// params: ctx.
-// return: *Params; never nil on success. On bad PARAMS JSON, falls back to defaults.
+// getParams reads the contract runtime parameters from world state.
+// The values control optional checks (ABAC, candidate validation, events) and size limits.
 func getParams(ctx contractapi.TransactionContextInterface) (*Params, error) {
 	p := &Params{
 		VerifyAttestation: true,           // <-- ON by default
@@ -352,78 +358,39 @@ func getParams(ctx contractapi.TransactionContextInterface) (*Params, error) {
 }
 
 
-// resolveStateForReader figures out caller’s state attribute for read-side APIs.
-// params: ctx.
-// return: state code or "TEST"/BYPASS_STATE when test-bypassed via env.
+// resolveStateForReader determines which state scope should be used for read-only queries.
+// This keeps read paths deterministic in tests and allows multi-state deployments.
 func resolveStateForReader(ctx contractapi.TransactionContextInterface) (string, error) {
-	/*if strings.ToLower(os.Getenv("BYPASS_ABAC_FOR_TEST")) == "on" {
-		if s := os.Getenv("BYPASS_STATE"); s != "" {
-			return s, nil
-		}
-		return "TEST", nil
-	}
-	id, err := cid.New(ctx.GetStub())
-	if err != nil {
-		return "", fmt.Errorf("cid: %w", err)
-	}
-	state, ok, _ := id.GetAttributeValue("state")
-	if !ok || state == "" {
-		return "", errors.New("missing state attribute")
-	}*/
+/* ABAC bypass note: tests/benchmarks can set BYPASS_ABAC_FOR_TEST=on (and optionally BYPASS_STATE) to skip identity checks. */
 	return "UP", nil
 }
 
 
-// requireABAC enforces ABAC for write-side calls (role/state/constituency).
-// params: ctx, constituencyID.
-// return: caller state or error when attributes are absent/mismatched.
+// requireABAC enforces attribute-based access control for write operations.
+// In production, callers must present (role, state, constituency) attributes.
+// In tests/benchmarks, the check can be bypassed via environment variables.
 func requireABAC(ctx contractapi.TransactionContextInterface, constituencyID string) (string, error) {
     // Test-only bypass: if BYPASS_ABAC_FOR_TEST=on, skip attribute checks.
     // Returns BYPASS_STATE if set, else "TEST".
-    /*if strings.ToLower(os.Getenv("BYPASS_ABAC_FOR_TEST")) == "on" {
-        if s := os.Getenv("BYPASS_STATE"); s != "" {
-            return s, nil
-        }
-        return "TEST", nil
-    }
-
-    id, err := cid.New(ctx.GetStub())
-    if err != nil {
-        return "", fmt.Errorf("cid: %w", err)
-    }
-    role, ok, _ := id.GetAttributeValue("role")
-    if !ok || role != "voterMachine" {
-        return "", errors.New("caller role must be voterMachine")
-    }
-    stateAttr, ok, _ := id.GetAttributeValue("state")
-    if !ok || stateAttr == "" {
-        return "", errors.New("missing state attribute")
-    }
-    constAttr, ok, _ := id.GetAttributeValue("constituency")
-    if !ok || constAttr == "" || constAttr != constituencyID {
-        return "", errors.New("constituency attribute mismatch")
-    }*/
+/* ABAC bypass note: tests/benchmarks can set BYPASS_ABAC_FOR_TEST=on (and optionally BYPASS_STATE) to skip identity checks. */
     return "UP", nil
 }
 
-// pollIsOpen returns whether a constituency is open for casting.
-// params: ctx, constituencyID.
-// return: true when open or unset (default-open), false when explicitly "closed".
+// pollIsOpen returns whether the poll is currently open for a constituency.
 func pollIsOpen(ctx contractapi.TransactionContextInterface, constituencyID string) (bool, error) {
     raw, err := ctx.GetStub().GetState(keyPollPrefix + constituencyID)
     if err != nil {
         return false, err
     }
     if raw == nil {
-        return true, nil // default open
+        return true, nil // Default open
     }
     return string(raw) == "open", nil
 }
 
 
-// encOneChecks ensures a Paillier ciphertext is a valid Enc(1) element.
-// params: c ciphertext, n2 modulus n².
-// return: error when out of range or non-invertible (gcd != 1).
+// encOneChecks validates encOneHex is well-formed and safe to use in modular arithmetic.
+// The intent is to reject malformed ciphertexts early (cheap checks only).
 func encOneChecks(c, n2 *big.Int) error {
 one := big.NewInt(1)
 if c.Cmp(one) <= 0 || c.Cmp(n2) >= 0 {
@@ -437,16 +404,15 @@ return nil
 }
 
 
-// voteKey builds the PDC key for the latest-vote pointer.
-// params: constituencyID, serial.
-// return: namespaced composite key string.
+// voteKey builds the private-data key for a vote (VOTE::<const>::<serial>).
+// The latest write wins, enabling re-voting while keeping one stored vote per serial.
 func voteKey(constituencyID, serial string) string {
 return fmt.Sprintf("VOTE::%s::%s", constituencyID, serial)
 }
 
-// hasVoterViaCC queries evote-preload.HasVoter for serial presence (string bool).
-// params: ctx, preloadCC, constituencyID, serial.
-// return: true/false or error if cc2cc call fails.
+// HasVoterViaCC queries evote-preload.HasVoter for serial presence (string bool).
+// Params: ctx, preloadCC, constituencyID, serial.
+// Return: true/false or error if cc2cc call fails.
 func hasVoterViaCC(ctx contractapi.TransactionContextInterface, preloadCC, constituencyID, serial string) (bool, error) {
     // Function name and args must match evote-preload/main.go
     args := [][]byte{[]byte("HasVoter"), []byte(constituencyID), []byte(serial)}
@@ -457,16 +423,16 @@ func hasVoterViaCC(ctx contractapi.TransactionContextInterface, preloadCC, const
         }
         return false, fmt.Errorf("cc2cc HasVoter failed with status %d", resp.Status)
     }
-    // contractapi returns JSON "true"/"false"
+    // Contractapi returns JSON "true"/"false"
 	payload := strings.TrimSpace(string(resp.Payload))
 	payload = strings.Trim(payload, `"`)
 	ok, _ := strconv.ParseBool(strings.ToLower(payload))
 	return ok, nil
 }
 
-// callPreload is a safe wrapper to call read-only functions in preload/booth CCs.
-// params: ctx, preloadCC name, function, args.
-// return: raw payload bytes or error on non-200 or empty payload.
+// CallPreload is a safe wrapper to call read-only functions in preload/booth CCs.
+// Params: ctx, preloadCC name, function, args.
+// Return: raw payload bytes or error on non-200 or empty payload.
 func callPreload(ctx contractapi.TransactionContextInterface, preloadCC, fcn string, args ...string) ([]byte, error) {
     if ctx == nil {
         return nil, fmt.Errorf("cc2cc %s: nil ctx", fcn)
@@ -499,9 +465,9 @@ func callPreload(ctx contractapi.TransactionContextInterface, preloadCC, fcn str
 }
 
 
-// mustJSON marshals v and ignores errors (used for events and small writes).
-// params: any.
-// return: JSON bytes (best effort).
+// MustJSON marshals v and ignores errors (used for events and small writes).
+// Params: any.
+// Return: JSON bytes (best effort).
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
 const (
@@ -509,12 +475,12 @@ const (
     maxBioNonceB64  = 128
     maxBioTagHex    = 128  // 64 bytes hex for HMAC-SHA256
     maxBioAlgLen    = 64
-    maxDevSigB64    = 2048 // adjust if your device signatures are larger
+    maxDevSigB64    = 2048 // Adjust if your device signatures are larger
 )
 
-// clampVoteExtras bounds variable-size inputs to keep records predictable and safe.
-// params: bioAlg, bioNonceB64, bioCipherB64, bioTagHex, devSigB64.
-// return: error if any exceeds configured limits.
+// ClampVoteExtras bounds variable-size inputs to keep records predictable and safe.
+// Params: bioAlg, bioNonceB64, bioCipherB64, bioTagHex, devSigB64.
+// Return: error if any exceeds configured limits.
 func clampVoteExtras(bioAlg, bioNonceB64, bioCipherB64, bioTagHex, devSigB64 string) error {
     if len(bioAlg) > maxBioAlgLen { return fmt.Errorf("bioAlg too long") }
     if len(bioNonceB64) > maxBioNonceB64 { return fmt.Errorf("bioNonce too long") }
@@ -525,12 +491,10 @@ func clampVoteExtras(bioAlg, bioNonceB64, bioCipherB64, bioTagHex, devSigB64 str
 }
 
 
-/* ------------------------------ Admin / Setup ------------------------------ */
+/* Admin / Setup */
 
-// SetJointPublicKey stores the Paillier PK for a state (validates hex; fills N2; warms cache).
-// params: ctx, stateCode, pkJSON (fields: N,G[,N2]).
-// return: error on malformed JSON/hex or ledger write failure.
-// Store Paillier PK (hex fields). EP enforced by endorsement policy.
+// SetJointPublicKey stores the Paillier public key for a state and anchors the key ceremony.
+// This function is part of the trustee key distribution workflow.
 func (c *AccumVoteContract) SetJointPublicKey(ctx contractapi.TransactionContextInterface, stateCode string, pkJSON string) error {
 	stateCode = strings.TrimSpace(stateCode)
 	if stateCode == "" {
@@ -555,7 +519,7 @@ func (c *AccumVoteContract) SetJointPublicKey(ctx contractapi.TransactionContext
 	} else {
 		n2, err := bigFromHex(pk.N2)
 		if err != nil { return fmt.Errorf("pk.N2 bad hex: %w", err) }
-		pk.N2 = hexFromBig(n2) // canonicalize
+		pk.N2 = hexFromBig(n2) // Canonicalize
 	}
 
 	// Store canonical JSON exactly once
@@ -575,7 +539,7 @@ func (c *AccumVoteContract) SetJointPublicKey(ctx contractapi.TransactionContext
 	if params, _ := getParams(ctx); params.EmitEvents {
 		_ = ctx.GetStub().SetEvent(eventPublicKeySet, mustJSON(map[string]string{
 			"state": stateCode,
-			"nHash": sha256HexStr(pk.N), // keep behavior stable
+			"nHash": sha256HexStr(pk.N), // Keep behavior stable
 			"time":  nowRFC3339(ctx),
 		}))
 	}
@@ -583,9 +547,7 @@ func (c *AccumVoteContract) SetJointPublicKey(ctx contractapi.TransactionContext
 }
 
 
-// GetJointPublicKey fetches the stored PK JSON for a state.
-// params: ctx, stateCode.
-// return: pkJSON string or error if missing/ledger read fails.
+// GetJointPublicKey returns the stored Paillier public key for a state.
 func (c *AccumVoteContract) GetJointPublicKey(ctx contractapi.TransactionContextInterface, stateCode string) (string, error) {
 raw, err := ctx.GetStub().GetState(keyPKPrefix + stateCode)
 if err != nil {
@@ -597,9 +559,8 @@ return "", fmt.Errorf("not found")
 return string(raw), nil
 }
 
-// SeedCandidateList writes a sorted local copy of candidate IDs for a constituency.
-// params: ctx, constituencyID, candidatesJSON ([]string).
-// return: error on parse or write failure.
+// SeedCandidateList stores a canonical candidate list for a constituency.
+// The list is used by validation/tally logic and by the public dashboard.
 func (c *AccumVoteContract) SeedCandidateList(ctx contractapi.TransactionContextInterface, constituencyID string, candidatesJSON string) error {
 constituencyID = strings.TrimSpace(constituencyID)
 if constituencyID == "" {
@@ -614,9 +575,7 @@ b, _ := json.Marshal(ids)
 return ctx.GetStub().PutState(keyCandsListPrefx+constituencyID, b)
 }
 
-// GetCandidateList returns the stored local candidate list, sorted, or empty.
-// params: ctx, constituencyID.
-// return: []string list; never nil on success.
+// GetCandidateList returns the candidate list previously seeded for the constituency.
 func (c *AccumVoteContract) GetCandidateList(ctx contractapi.TransactionContextInterface, constituencyID string) ([]string, error) {
 raw, err := ctx.GetStub().GetState(keyCandsListPrefx + constituencyID)
 if err != nil {
@@ -633,9 +592,8 @@ sort.Strings(arr)
 return arr, nil
 }
 
-// OpenPoll marks a constituency as open (emits event when enabled).
-// params: ctx, constituencyID.
-// return: error on ledger write failure.
+// OpenPoll marks the poll as open for a constituency.
+// RecordVote will reject if the poll is not open.
 func (c *AccumVoteContract) OpenPoll(ctx contractapi.TransactionContextInterface, constituencyID string) error {
     if err := ctx.GetStub().PutState(keyPollPrefix+constituencyID, []byte("open")); err != nil { return err }
     if p, _ := getParams(ctx); p.EmitEvents {
@@ -646,9 +604,8 @@ func (c *AccumVoteContract) OpenPoll(ctx contractapi.TransactionContextInterface
     return nil
 }
 
-// ClosePoll marks a constituency as closed (emits event when enabled).
-// params: ctx, constituencyID.
-// return: error on ledger write failure.
+// ClosePoll marks the poll as closed for a constituency.
+// Tally/Publish operations typically require the poll to be closed.
 func (c *AccumVoteContract) ClosePoll(ctx contractapi.TransactionContextInterface, constituencyID string) error {
     if err := ctx.GetStub().PutState(keyPollPrefix+constituencyID, []byte("closed")); err != nil { return err }
     if p, _ := getParams(ctx); p.EmitEvents {
@@ -660,9 +617,7 @@ func (c *AccumVoteContract) ClosePoll(ctx contractapi.TransactionContextInterfac
 }
 
 
-// SetParams merges provided JSON with current params and stores the result.
-// params: ctx, paramsJSON (partial map).
-// return: error on bad JSON or ledger write failure.
+// SetParams writes runtime parameters (feature flags and limits) to world state.
 func (c *AccumVoteContract) SetParams(ctx contractapi.TransactionContextInterface, paramsJSON string) error {
     cur, err := getParams(ctx)
     if err != nil { return err }
@@ -693,18 +648,14 @@ func (c *AccumVoteContract) SetParams(ctx contractapi.TransactionContextInterfac
     return nil
 }
 
-// GetParams returns the active params (public API wrapper).
-// params: ctx.
-// return: *Params or error if underlying read fails.
+// GetParams reads back the stored runtime parameters.
 func (c *AccumVoteContract) GetParams(ctx contractapi.TransactionContextInterface) (*Params, error) {
 return getParams(ctx)
 }
 
 
-// iterVotesPDC scans latest-vote pointers for a constituency from the PDC.
-// It now uses a public-state range scan over BAL::<serial> keys,
-// and per-key GetPrivateData() on the votes_pdc collection.
-// Returns: map[serial]VoteMetaPDC or error on iterator failure.
+// iterVotesPDC iterates all vote records for a constituency from the votes private data collection.
+// It returns a map keyed by serial so later phases can apply status rules and perform tallying.
 func iterVotesPDC(ctx contractapi.TransactionContextInterface, constituencyID string) (map[string]VoteMetaPDC, error) {
     // Scan all kiosk ballot metas in public state
     startKey := keyBallotPrefix        // "BAL::"
@@ -755,9 +706,8 @@ func iterVotesPDC(ctx contractapi.TransactionContextInterface, constituencyID st
 
 
 
-// RefreshCandidateListFromPreload copies the canonical list from preload CC.
-// params: ctx, constituencyID.
-// return: error on cc2cc failure, bad JSON, or WS write failure.
+// RefreshCandidateListFromPreload fetches the candidate list from the preload registry chaincode
+// and stores it locally for this contract.
 func (c *AccumVoteContract) RefreshCandidateListFromPreload(
     ctx contractapi.TransactionContextInterface,
     constituencyID string,
@@ -771,7 +721,7 @@ func (c *AccumVoteContract) RefreshCandidateListFromPreload(
     if err != nil {
         return err
     }
-    // cc2cc → evote-preload.GetCandidateList(constituencyID) -> payload bytes are a JSON array string
+    // Cc2cc → evote-preload.GetCandidateList(constituencyID) -> payload bytes are a JSON array string
     payload, err := callPreload(ctx, params.PreloadCCName, "GetCandidateList", constituencyID)
     if err != nil {
         return err
@@ -790,14 +740,14 @@ func (c *AccumVoteContract) RefreshCandidateListFromPreload(
     }
 
     // Optional: also store a hash for audit/version-lock
-    // sum := sha256Hex(b)
+    // Sum := sha256Hex(b)
     // _ = ctx.GetStub().PutState("CANDLIST_HASH::"+constituencyID, []byte(sum))
 
 	if params.EmitEvents {
 		_ = ctx.GetStub().SetEvent(eventCandidateListRefreshed, mustJSON(map[string]any{
 			"constituency": constituencyID,
 			"count":        len(ids),
-			"listHash":     sha256Hex(b),     // hash of sorted JSON
+			"listHash":     sha256Hex(b),     // Hash of sorted JSON
 			"time":         nowRFC3339(ctx),
 		}))
 	}
@@ -806,11 +756,10 @@ func (c *AccumVoteContract) RefreshCandidateListFromPreload(
 }
 
 
-/* --------------------------------- Queries -------------------------------- */
+/* Queries */
 
-// GetBallotBySerial fetches the public kiosk meta row for a serial.
-// params: ctx, serial.
-// return: *BallotMeta or error if missing/malformed.
+// GetBallotBySerial returns public ballot metadata for a serial (BAL::<serial>).
+// This is the main input for kiosk/receipt verification.
 func (c *AccumVoteContract) GetBallotBySerial(ctx contractapi.TransactionContextInterface, serial string) (*BallotMeta, error) {
 raw, err := ctx.GetStub().GetState(keyBallotPrefix + serial)
 if err != nil {
@@ -826,9 +775,8 @@ return nil, err
 return &m, nil
 }
 
-// GetEncSums multiplies each candidate’s Enc(1) over latest valid pointers (no eligibility checks).
-// params: ctx, constituencyID.
-// return: map[candidateID]hex(Enc(sum)) or error.
+// GetEncSums recomputes the encrypted vote sums for the current ballots.
+// It is used for transparency/debugging and to support audit tooling.
 func (c *AccumVoteContract) GetEncSums(ctx contractapi.TransactionContextInterface, constituencyID string) (map[string]string, error) {
     state, err := resolveStateForReader(ctx)
     if err != nil { return nil, err }
@@ -876,12 +824,14 @@ func (c *AccumVoteContract) GetEncSums(ctx contractapi.TransactionContextInterfa
 }
 
 
-/* -------------------------------- Hot path -------------------------------- */
+/* Hot path */
 
-// RecordVote writes a voter’s latest choice to PDC and kiosk meta, with basic gates.
-// params: ctx; serial/constituencyID/candidateID; encOneHex/receiptSalt/epoch/attestationSig;
-//         boothID/deviceID/deviceKeyFP; bioAlg/bioNonceB64/bioCipherB64/bioTagHex.
-// return: compact JSON ack or error; no eligibility checks here (done at tally).
+// RecordVote is the high-throughput vote submission entry point.
+//
+// Key properties:
+// - Writes the vote to private data under VOTE::<const>::<serial> (latest write wins).
+// - Writes/updates BAL::<serial> with Status=Pending and the receipt hash (hC).
+// - Does NOT create TXIDX entries; those are created only when ballots become Current.
 func (c *AccumVoteContract) RecordVote(
     ctx contractapi.TransactionContextInterface,
     serial, constituencyID, candidateID string,
@@ -894,10 +844,10 @@ func (c *AccumVoteContract) RecordVote(
     open, err := pollIsOpen(ctx, constituencyID)
     if err != nil { return "", err }
     if !open { return "", fmt.Errorf("poll closed") }
-    state, err := requireABAC(ctx, constituencyID) // tests bypass via env
+    state, err := requireABAC(ctx, constituencyID) // Tests bypass via env
     if err != nil { return "", err }
 
-    /// 1) Fast params + attestation gate (fail before any heavy work)
+    // / 1) Fast params + attestation gate (fail before any heavy work)
 	params, _ := getParams(ctx)
 	if params.VerifyAttestation && strings.TrimSpace(attestationSig) == "" {
 		return "", fmt.Errorf("missing device attestation")
@@ -962,11 +912,12 @@ func (c *AccumVoteContract) RecordVote(
 }
 
 
-/* ------------------------------- Tally path ------------------------------- */
+/* Tally path */
 
-// TallyPrepare validates latest votes and composes encrypted sums; sets BAL status and TXIDX.
-// params: ctx, constituencyID.
-// return: map[candidateID]hex(Enc(sum)) or error; emits counts and hash for audit.
+// TallyPrepare prepares an encrypted tally over ballots currently marked as Current.
+//
+// It reads votes from private data, multiplies ciphertexts modulo n^2 per candidate,
+// and writes a public anchor that can be verified by trustees and the public dashboard.
 func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInterface, constituencyID string) (map[string]string, error) {
 	state, err := resolveStateForReader(ctx)
 	if err != nil { return nil, err }
@@ -985,7 +936,7 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 		return nil, err 
 	}
 	if len(candList) == 0 {
-		// force admin to seed candidates beforehand
+		// Force admin to seed candidates beforehand
 		return nil, fmt.Errorf("candidate list not seeded for %s", constituencyID)
 	}
 
@@ -1002,12 +953,12 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 	if err != nil { return nil, err }
 	
 		// Pass 0. Detect whether we have any “real” Paillier ciphertexts.
-	// before the loop
+	// Before the loop
 	validCount := 0
 	invalidCount := 0
 
 	for serial, vm := range latest {
-		// candidate missing
+		// Candidate missing
 		if _, ok := candOK[vm.CandidateID]; !ok {
 			invalidCount++
 			if params.EmitEvents {
@@ -1022,7 +973,7 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 			continue
 		}
 
-		// voter roll
+		// Voter roll
 		if params.ValidateOnTally {
 			ok, err := hasVoterViaCC(ctx, params.PreloadCCName, constituencyID, serial)
 			if err != nil { return nil, err }
@@ -1041,7 +992,7 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 			}
 		}
 
-		// booth validation
+		// Booth validation
 		if params.ValidateBoothOnTally {
 			stateForBooth := vm.StateCode
 			if stateForBooth == "" { stateForBooth = state }
@@ -1086,7 +1037,7 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 		}
 		_ = ctx.GetStub().SetEvent(eventTallyPrepared, mustJSON(map[string]any{
 			"constituency": constituencyID,
-			"sumsHash":     sha256Hex(buf.Bytes()), // stable trace of encrypted totals
+			"sumsHash":     sha256Hex(buf.Bytes()), // Stable trace of encrypted totals
 			"valid":        validCount,
 			"invalid":      invalidCount,
 			"time":         nowRFC3339(ctx),
@@ -1106,12 +1057,14 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 }
 
 
-// ApplyBallotStatuses writes statuses and/or tx index based on
-// an off-chain prepared JSON payload (no private-data reads).
+// ApplyBallotStatuses applies eligibility decisions to BAL::<serial> after off-chain checks.
+//
+// It also maintains TXIDX::<txID> so that tx-based receipt checks only work for Current ballots.
+// Invalid or superseded ballots have their TXIDX entry removed.
 func (c *AccumVoteContract) ApplyBallotStatuses(
     ctx contractapi.TransactionContextInterface,
     constituencyID string,
-    statusJSON string, // e.g., {"current":[{"serial":"...","txID":"..."}], "invalid":[...]}
+    statusJSON string, // E.g., {"current":[{"serial":"...","txID":"..."}], "invalid":[...]}
 ) error {
     var payload struct {
         Current []struct {
@@ -1129,12 +1082,12 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
     }
 
 	for _, v := range payload.Current {
-		// reuse markBallotStatus: this only writes WS, no PDC reads
+		// Reuse markBallotStatus: this only writes WS, no PDC reads
 		vm := VoteMetaPDC{EncOneHex: v.EncOne, TxID: v.TxID, Epoch: ""} // EncOne optional
 		markBallotStatus(ctx, v.Serial, "current", vm)
 
 		// TXIDX is *only* for ballots that are current/valid so that VerifyReceipt
-		// only ever sees "live" votes; superseded/invalid ones become unknown_tx.
+		// Only ever sees "live" votes; superseded/invalid ones become unknown_tx.
 		if v.TxID != "" {
 			_ = ctx.GetStub().PutState(keyTxIdxPrefix+v.TxID, []byte(v.Serial))
 		}
@@ -1143,11 +1096,11 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 	for _, v := range payload.Invalid {
 		// Mark the ballot as invalid in BAL::<serial>, but DO NOT create TXIDX.
 		// This ensures:
-		//   - invalid voters (e.g. off-roll, bad booth) are excluded from receipt lookups
-		//   - tests expecting no TXIDX for invalid txIDs (tx-bad, tx-2) pass
+		// - invalid voters (e.g. off-roll, bad booth) are excluded from receipt lookups
+		// - tests expecting no TXIDX for invalid txIDs (tx-bad, tx-2) pass
 		vm := VoteMetaPDC{TxID: v.TxID}
 		markBallotStatus(ctx, v.Serial, "invalid", vm)
-		// intentionally no TXIDX:: write here
+		// Intentionally no TXIDX:: write here
 	}
 
 	return nil
@@ -1155,9 +1108,8 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 }
 
 
-// markBallotStatus updates public kiosk meta with status and hashes the Enc(1) for receipt match.
-// params: ctx, serial, new status, vm (to derive HC/epoch/txID).
-// return: none; best-effort write.
+// markBallotStatus updates BAL::<serial> while preserving receipt-critical fields.
+// In particular, it does not overwrite hC unless a new encOneHex is provided.
 func markBallotStatus(ctx contractapi.TransactionContextInterface, serial, status string, vm VoteMetaPDC) {
     bm := BallotMeta{
         HC:   sha256HexStr(vm.EncOneHex),
@@ -1173,9 +1125,8 @@ func markBallotStatus(ctx contractapi.TransactionContextInterface, serial, statu
 }
 
 
-// PublishResults anchors plaintext results and a proof bundle hash after close.
-// params: ctx, constituencyID, roundID, resultJSON, bundleHash.
-// return: error when poll still open or on write failure; emits event on success.
+// PublishResults stores a plaintext results anchor for a constituency and round.
+// This is typically called after trustees finish decryption and produce a bundle hash.
 func (c *AccumVoteContract) PublishResults(ctx contractapi.TransactionContextInterface,
     constituencyID string, roundID string, resultJSON string, bundleHash string) error {
 
@@ -1207,9 +1158,8 @@ func (c *AccumVoteContract) PublishResults(ctx contractapi.TransactionContextInt
 }
 
 
-// VerifyReceipt checks a (txID, receipt) pair against public kiosk meta.
-// params: ctx, txID, receipt (hex SHA256(encOneHex)).
-// return: small JSON with ok/superseded/reason/serial/txID.
+// VerifyReceipt validates a receipt using (txID, hC) via TXIDX::<txID>.
+// TXIDX is maintained only for Current ballots; unknown txIDs are reported as unknown_tx.
 func (c *AccumVoteContract) VerifyReceipt(ctx contractapi.TransactionContextInterface, txID string, receipt string) (string, error) {
     serialB, err := ctx.GetStub().GetState(keyTxIdxPrefix + txID)
     if err != nil { return "", err }
@@ -1242,12 +1192,9 @@ func (c *AccumVoteContract) VerifyReceipt(ctx contractapi.TransactionContextInte
 }
 
 
-/* --------------------------------- Health --------------------------------- */
+/* Health */
 
-// Ping returns a simple liveness string prefixed with current txID.
-// params: ctx.
-// return: "OK:<txID>", error on stub failure.
+// Ping is a simple health check used by deployment tooling and test harnesses.
 func (c *AccumVoteContract) Ping(ctx contractapi.TransactionContextInterface) (string, error) {
 return "OK:" + ctx.GetStub().GetTxID(), nil
 }
-
