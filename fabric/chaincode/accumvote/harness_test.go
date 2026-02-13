@@ -1,20 +1,20 @@
-// harness_test.go
+// Harness_test.go
 //
 // Purpose: Minimal, deterministic test harness for the AccumVote chaincode.
-// Role:    Provides an in-memory world-state/private-data “ledger”, a mocked Fabric
-//          ChaincodeStub (via gomock), and focused helpers to stub cross-chaincode
-//          calls (evote-preload, boothpdc). It lets tests drive the contract
-//          without real peers, orderers, or crypto material.
+// Role: Provides an in-memory world-state/private-data “ledger”, a mocked Fabric
+// ChaincodeStub (via gomock), and focused helpers to stub cross-chaincode
+// Calls (evote-preload, boothpdc). It lets tests drive the contract
+// Without real peers, orderers, or crypto material.
 // Key deps:
-//   • Hyperledger Fabric Go SDKs: chaincode-go/shim, contractapi, protos (peer, msp, queryresult)
-//   • gomock for stub expectations and return paths
-//   • Google protobuf/timestamppb for stable TxTimestamp values
-//   • Local fakes package: github.com/yourorg/accumvote_cc/fakes (mock stub interface)
+// - Hyperledger Fabric Go SDKs: chaincode-go/shim, contractapi, protos (peer, msp, queryresult)
+// - gomock for stub expectations and return paths
+// - Google protobuf/timestamppb for stable TxTimestamp values
+// - Local fakes package: github.com/yourorg/accumvote_cc/fakes (mock stub interface)
 // Notes:
-//   • This harness makes defensive copies of byte slices to avoid aliasing between
-//     the test code and the “ledger” maps.
-//   • It purposely keeps behavior small and predictable; only the code paths used
-//     by the tests are mocked.
+// - This harness makes defensive copies of byte slices to avoid aliasing between
+// The test code and the “ledger” maps.
+// - It purposely keeps behavior small and predictable; only the code paths used
+// By the tests are mocked.
 
 package main
 
@@ -65,9 +65,9 @@ const (
 )
 
 
-/* ---------------- in-memory WS/PDC harness ---------------- */
+/* in-memory WS/PDC harness */
 
-// memWorld is a tiny in-memory ledger used by the mock stub.
+// MemWorld is a tiny in-memory ledger used by the mock stub.
 // It tracks world state (ws), private data (pdc), emitted events, and op counts.
 type memWorld struct {
     ws  map[string][]byte
@@ -80,48 +80,48 @@ type memWorld struct {
     }
 }
 
-// newMemWorld allocates an empty memWorld.
+// NewMemWorld allocates an empty memWorld.
 // Params: none.
 // Returns: pointer to a zeroed, ready-to-use memWorld.
 func newMemWorld() *memWorld {
     return &memWorld{ws: make(map[string][]byte), pdc: make(map[string]map[string][]byte)}
 }
 
-// getState simulates GetState on the in-mem world state.
+// GetState simulates GetState on the in-mem world state.
 // Copies the value before returning to avoid aliasing in tests.
 // Params: key (string).
 // Returns: value ([]byte) or nil, error (always nil here).
 func (m *memWorld) getState(key string) ([]byte, error) {
     m.opsCounts.getState++
     if v, ok := m.ws[key]; ok {
-        return append([]byte(nil), v...), nil // copy for safety
+        return append([]byte(nil), v...), nil // Copy for safety
     }
     return nil, nil
 }
 
-// putState simulates PutState on the in-mem world state.
+// PutState simulates PutState on the in-mem world state.
 // Params: key, value.
 // Returns: error (always nil here).
 func (m *memWorld) putState(key string, val []byte) error {
     m.opsCounts.putState++
-    m.ws[key] = append([]byte(nil), val...) // copy for safety
+    m.ws[key] = append([]byte(nil), val...) // Copy for safety
     return nil
 }
 
-// getPDC simulates GetPrivateData from a named collection.
+// GetPDC simulates GetPrivateData from a named collection.
 // Params: coll, key.
 // Returns: value or nil, error (always nil here).
 func (m *memWorld) getPDC(coll, key string) ([]byte, error) {
     m.opsCounts.getPDC++
     if c, ok := m.pdc[coll]; ok {
         if v, ok2 := c[key]; ok2 {
-            return append([]byte(nil), v...), nil // copy for safety
+            return append([]byte(nil), v...), nil // Copy for safety
         }
     }
     return nil, nil
 }
 
-// putPDC simulates PutPrivateData into a named collection.
+// PutPDC simulates PutPrivateData into a named collection.
 // Lazily creates the collection map if needed.
 // Params: coll, key, value.
 // Returns: error (always nil here).
@@ -132,22 +132,22 @@ func (m *memWorld) putPDC(coll, key string, val []byte) error {
         c = make(map[string][]byte)
         m.pdc[coll] = c
     }
-    c[key] = append([]byte(nil), val...) // copy for safety
+    c[key] = append([]byte(nil), val...) // Copy for safety
     return nil
 }
 
-// setEvent records a chaincode event into the in-mem log.
+// SetEvent records a chaincode event into the in-mem log.
 // Params: name, payload.
 // Returns: error (always nil here).
 func (m *memWorld) setEvent(name string, payload []byte) error {
     m.opsCounts.setEvent++
     m.events = append(m.events, struct {
         name string; payload []byte
-    }{name: name, payload: append([]byte(nil), payload...)}) // copy for safety
+    }{name: name, payload: append([]byte(nil), payload...)}) // Copy for safety
     return nil
 }
 
-// memPDCIter is a simple iterator over a pre-materialized slice of PDC keys/values.
+// MemPDCIter is a simple iterator over a pre-materialized slice of PDC keys/values.
 // It implements the subset of shim.StateQueryIteratorInterface used by tests.
 type memPDCIter struct {
     keys []string
@@ -175,7 +175,7 @@ func (it *memPDCIter) Next() (*queryresult.KV, error) {
 // Returns: error (always nil here).
 func (it *memPDCIter) Close() error { return nil }
 
-// iterPDCRange materializes a range scan over a PDC collection.
+// IterPDCRange materializes a range scan over a PDC collection.
 // It honors [start, end) lexicographic bounds and sorts keys for deterministic order.
 // Params: coll, start, end.
 // Returns: an iterator over the selected KV slice.
@@ -187,14 +187,14 @@ func (m *memWorld) iterPDCRange(coll, start, end string) *memPDCIter {
         // Range semantics are inclusive of start and exclusive of end, matching Fabric behavior.
         if (start == "" || k >= start) && (end == "" || k < end) { keys = append(keys, k) }
     }
-    sort.Strings(keys) // keep scans stable across runs
+    sort.Strings(keys) // Keep scans stable across runs
     vals := make([][]byte, len(keys))
-    for i, k := range keys { vals[i] = append([]byte(nil), c[k]...) } // copy for safety
+    for i, k := range keys { vals[i] = append([]byte(nil), c[k]...) } // Copy for safety
     return &memPDCIter{keys: keys, vals: vals}
 }
 
 
-// iterWSRange materializes a range scan over world state (ws).
+// IterWSRange materializes a range scan over world state (ws).
 // It honors [start, end) lexicographic bounds and sorts keys for deterministic order.
 // Params: start, end.
 // Returns: an iterator over the selected KV slice.
@@ -211,7 +211,7 @@ func (m *memWorld) iterWSRange(start, end string) *memPDCIter {
     sort.Strings(keys)
     vals := make([][]byte, len(keys))
     for i, k := range keys {
-        vals[i] = append([]byte(nil), m.ws[k]...) // copy for safety
+        vals[i] = append([]byte(nil), m.ws[k]...) // Copy for safety
     }
     return &memPDCIter{keys: keys, vals: vals}
 }
@@ -219,7 +219,7 @@ func (m *memWorld) iterWSRange(start, end string) *memPDCIter {
 
 // --- booth cc stubbing ---
 
-// boothStubRec describes the shape of a booth record when mocking boothpdc.
+// BoothStubRec describes the shape of a booth record when mocking boothpdc.
 // It is here for clarity; the test harness constructs JSON directly when returning.
 type boothStubRec struct {
     StateCode, ConstituencyID, BoothID string
@@ -228,17 +228,17 @@ type boothStubRec struct {
     DeviceID, DeviceKeyFingerprint string
 }
 
-// stubBoothOK wires gomock expectations to answer boothpdc calls for a single booth.
+// StubBoothOK wires gomock expectations to answer boothpdc calls for a single booth.
 // It handles HasBooth and GetBooth for the provided state/constituency/booth, returning
-// an active row with the given device and time window.
+// An active row with the given device and time window.
 // Params: state, cid, booth, devID, devFP, open, close.
 // Returns: none.
 func (h *testHarness) stubBoothOK(state, cid, booth, devID, devFP string, open, close int64) {
     h.stub.EXPECT().
         InvokeChaincode(
-            gomock.Eq("boothpdc"),                       // cc name
-            gomock.AssignableToTypeOf([][]byte{}), // args
-            gomock.Any(),                          // channel
+            gomock.Eq("boothpdc"),                       // Cc name
+            gomock.AssignableToTypeOf([][]byte{}), // Args
+            gomock.Any(),                          // Channel
         ).
         AnyTimes().
         DoAndReturn(func(cc string, args [][]byte, ch string) *pb.Response {
@@ -273,7 +273,7 @@ func (h *testHarness) stubBoothOK(state, cid, booth, devID, devFP string, open, 
         })
 }
 
-// readVM is a test helper that fetches the latest VoteMetaPDC for a serial from the in-mem PDC.
+// ReadVM is a test helper that fetches the latest VoteMetaPDC for a serial from the in-mem PDC.
 // It fails the test if the key is missing or JSON is malformed.
 // Params: t (testing.T), h (harness), constituencyID, serial.
 // Returns: VoteMetaPDC value.
@@ -297,9 +297,9 @@ func readVM(t *testing.T, h *testHarness, constituencyID, serial string) VoteMet
 }
 
 
-/* ---------------- tx context w/ real stub (no gomock ctx) ---------------- */
+/* tx context w/ real stub (no gomock ctx) */
 
-// simpleTxCtx adapts a raw shim.ChaincodeStubInterface to a contractapi TransactionContext.
+// SimpleTxCtx adapts a raw shim.ChaincodeStubInterface to a contractapi TransactionContext.
 // It keeps the shape tiny because tests only need GetStub.
 // Params: none (constructed with a stub field).
 // Returns: methods to satisfy contractapi.TransactionContextInterface.
@@ -311,9 +311,9 @@ func (c *simpleTxCtx) GetStub() shim.ChaincodeStubInterface { return c.s }
 // GetClientIdentity is not used by the tests; it returns nil to satisfy the interface.
 func (c *simpleTxCtx) GetClientIdentity() cid.ClientIdentity { return nil }
 
-/* ---------------- test harness (single definition) ---------------- */
+/* test harness (single definition) */
 
-// testHarness bundles the mock controller, stub, in-mem ledger, and the contract under test.
+// TestHarness bundles the mock controller, stub, in-mem ledger, and the contract under test.
 // It also tracks a mutable txID to let tests simulate different transactions.
 type testHarness struct {
     ctrl *gomock.Controller
@@ -325,11 +325,9 @@ type testHarness struct {
     txID string
 }
 
-// newHarness wires up a ready-to-use harness with common defaults:
-// mock stub, in-mem ledger handlers, fixed TxTimestamp within the booth window,
-// default channel ID, and a working booth stub.
-// Params: t (*testing.T).
-// Returns: *testHarness.
+// newHarness builds a mocked Fabric transaction context for unit tests.
+// It wires world state and private data collections to in-memory maps.
+// The harness resets global caches (e.g., pkCache) to keep tests isolated.
 func newHarness(t *testing.T) *testHarness {
     t.Helper()
 
@@ -350,7 +348,7 @@ func newHarness(t *testing.T) *testHarness {
     stub.EXPECT().GetTxID().AnyTimes().DoAndReturn(func() string { return h.txID })
     
 	// Pick a cast time inside the booth window so time checks pass by default.
-	const testCastTime int64 = testOpenTime + 60 // any value within [open, close]
+	const testCastTime int64 = testOpenTime + 60 // Any value within [open, close]
 
 	stub.EXPECT().
 		GetTxTimestamp().
@@ -393,9 +391,9 @@ func newHarness(t *testing.T) *testHarness {
     return h
 }
 
-/* ---------------- cc2cc stub (pointer return matches your shim) ---------------- */
+/* cc2cc stub (pointer return matches your shim) */
 
-// stubPreloadCC mocks evote-preload for both candidate list and voter eligibility.
+// StubPreloadCC mocks evote-preload for both candidate list and voter eligibility.
 // It responds to multiple function names to tolerate minor variations in upstream code.
 // Params: cands (candidate IDs), eligible map[serial]bool (nil => everyone eligible).
 // Returns: none.
@@ -436,19 +434,19 @@ func (h *testHarness) stubPreloadCC(cands []string, eligible map[string]bool) {
         })
 }
 
-// stubPreloadCandidatesOnly is a shorthand to mock only candidate enumeration.
+// StubPreloadCandidatesOnly is a shorthand to mock only candidate enumeration.
 // Params: cands.
 // Returns: none.
 func (h *testHarness) stubPreloadCandidatesOnly(cands []string) { h.stubPreloadCC(cands, nil) }
 
-/* ---------------- small helpers ---------------- */
+/* small helpers */
 
-// setTxID overrides the txID seen by the contract for the next operations.
+// SetTxID overrides the txID seen by the contract for the next operations.
 // Params: id.
 // Returns: none.
 func (h *testHarness) setTxID(id string) { h.txID = id }
 
-// setPK_UP writes a simple public key JSON for the test state and calls SetJointPublicKey.
+// SetPK_UP writes a simple public key JSON for the test state and calls SetJointPublicKey.
 // It uses the contract under test so code paths remain realistic.
 // Params: none.
 // Returns: error from SetJointPublicKey.
@@ -457,17 +455,17 @@ func (h *testHarness) setPK_UP() error {
     return h.cc.SetJointPublicKey(h.ctx, testStateUP, pkJSON)
 }
 
-// openPoll calls the contract’s OpenPoll for the test constituency.
+// OpenPoll calls the contract’s OpenPoll for the test constituency.
 // Params: none.
 // Returns: error from the contract.
 func (h *testHarness) openPoll() error  { return h.cc.OpenPoll(h.ctx, testConst) }
 
-// closePoll calls the contract’s ClosePoll for the test constituency.
+// ClosePoll calls the contract’s ClosePoll for the test constituency.
 // Params: none.
 // Returns: error from the contract.
 func (h *testHarness) closePoll() error { return h.cc.ClosePoll(h.ctx, testConst) }
 
-// seedCandidates persists a candidate list into world state using the contract API.
+// SeedCandidates persists a candidate list into world state using the contract API.
 // Params: ids (candidate IDs).
 // Returns: error from the contract.
 func (h *testHarness) seedCandidates(ids []string) error {
@@ -475,7 +473,7 @@ func (h *testHarness) seedCandidates(ids []string) error {
     return h.cc.SeedCandidateList(h.ctx, testConst, string(b))
 }
 
-// recordVote submits a RecordVote on the contract with sensible defaults for booth/device fields.
+// RecordVote submits a RecordVote on the contract with sensible defaults for booth/device fields.
 // Params: serial, cand, enc1 (Enc(1) hex).
 // Returns: contract’s JSON string response and error.
 func (h *testHarness) recordVote(serial, cand, enc1 string) (string, error) {
@@ -486,7 +484,7 @@ func (h *testHarness) recordVote(serial, cand, enc1 string) (string, error) {
     )
 }
 
-// requireNoErr fails the test immediately if err != nil, labeling it unexpected.
+// RequireNoErr fails the test immediately if err != nil, labeling it unexpected.
 // Params: t, err.
 // Returns: none.
 func requireNoErr(t *testing.T, err error) {
@@ -494,7 +492,7 @@ func requireNoErr(t *testing.T, err error) {
     if err != nil { t.Fatalf("unexpected error: %v", err) }
 }
 
-// requireErrContains asserts that err is non-nil and its message contains wantSubstr (case-insensitive).
+// RequireErrContains asserts that err is non-nil and its message contains wantSubstr (case-insensitive).
 // Params: t, err, wantSubstr (may be empty to assert only non-nil).
 // Returns: none.
 func requireErrContains(t *testing.T, err error, wantSubstr string) {
@@ -508,9 +506,9 @@ func requireErrContains(t *testing.T, err error, wantSubstr string) {
 }
 
 
-/* ---------------- tiny JSON & identity helpers ---------------- */
+/* tiny JSON & identity helpers */
 
-// jsonMarshal is a minimal, allocation-aware encoder for []string used by tests.
+// JsonMarshal is a minimal, allocation-aware encoder for []string used by tests.
 // It exists to avoid pulling in more JSON wrangling and to keep output stable.
 // Params: v (only []string is supported; anything else returns "null").
 // Returns: raw JSON bytes.
@@ -533,12 +531,12 @@ func jsonMarshal(v any) []byte {
     }
 }
 
-// toJSONBytes marshals any Go value using encoding/json with errors ignored for tests.
+// ToJSONBytes marshals any Go value using encoding/json with errors ignored for tests.
 // Params: v.
 // Returns: JSON bytes (best effort).
 func toJSONBytes(v any) []byte { b, _ := json.Marshal(v); return b }
 
-// devSerializedIdentity generates a minimal SerializedIdentity with a self-signed cert.
+// DevSerializedIdentity generates a minimal SerializedIdentity with a self-signed cert.
 // It’s good enough for GetCreator parsing in contract code.
 // Params: ms (MSP ID).
 // Returns: raw serialized identity bytes.
@@ -552,9 +550,9 @@ func devSerializedIdentity(ms string) []byte {
     return b
 }
 
-/* ---------------- env presets used by your tests ---------------- */
+/* env presets used by your tests */
 
-// setDefaultEnv applies production-like toggles and enables ABAC bypass for unit tests.
+// SetDefaultEnv applies production-like toggles and enables ABAC bypass for unit tests.
 // It sets BYPASS_STATE to ensure deterministic state resolution.
 // Params: t.
 // Returns: none.
@@ -564,8 +562,8 @@ func setDefaultEnv(t *testing.T) {
     t.Setenv("BYPASS_STATE", testStateUP)
 }
 
-// setProdEnv sets sane defaults mirroring the intended production posture,
-// while still allowing unit tests to run deterministically.
+// SetProdEnv sets sane defaults mirroring the intended production posture,
+// While still allowing unit tests to run deterministically.
 // Params: t.
 // Returns: none.
 func setProdEnv(t *testing.T) {
