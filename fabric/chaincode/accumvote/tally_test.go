@@ -1,18 +1,18 @@
-// tally_test.go
+// Tally_test.go
 //
 // Purpose: Unit and integration-style tests focused on the tally/accumulator read path
-//          of the AccumVote contract. These validate Enc(1) multiplication, latest-wins
-//          re-vote semantics, booth/device validation, and API parity between
-//          TallyPrepare and GetEncSums.
-// Role:    Runs against the in-memory harness and gomock’d ChaincodeStub from this test
-//          suite; no real Fabric network required.
+// Of the AccumVote contract. These validate Enc(1) multiplication, latest-wins
+// Re-vote semantics, booth/device validation, and API parity between
+// TallyPrepare and GetEncSums.
+// Role: Runs against the in-memory harness and gomock’d ChaincodeStub from this test
+// Suite; no real Fabric network required.
 // Key dependencies:
-//   • Contract under test: AccumVoteContract (same package)
-//   • Test harness: newHarness, memWorld, preload/booth cc2cc stubs
-//   • Crypto shape: Paillier Enc(1) products verified against modular exponentiation
+// - Contract under test: AccumVoteContract (same package)
+// - Test harness: newHarness, memWorld, preload/booth cc2cc stubs
+// - Crypto shape: Paillier Enc(1) products verified against modular exponentiation
 // Notes:
-//   • Helpers here are deliberately minimal and deterministic.
-//   • Tests expect small toy moduli and identity element “1” for Enc(0).
+// - Helpers here are deliberately minimal and deterministic.
+// - Tests expect small toy moduli and identity element “1” for Enc(0).
 
 package main
 
@@ -25,7 +25,7 @@ import (
 
 // ---------- small helpers (local to this file) ----------
 
-// bigFromPossiblyHex parses an integer from relaxed inputs: decimal, hex with/without
+// BigFromPossiblyHex parses an integer from relaxed inputs: decimal, hex with/without
 // 0x prefix, and odd-length hex (auto-padded).
 // Params: s – string like "1", "0xca1", "ca1", or "31".
 // Returns: *big.Int parsed value, or error if neither hex nor decimal parses.
@@ -62,7 +62,7 @@ func bigFromPossiblyHex(s string) (*big.Int, error) {
 	return new(big.Int).SetBytes(b), nil
 }
 
-// mustBigFromHex is a test helper that fatals on parse error.
+// MustBigFromHex is a test helper that fatals on parse error.
 // Params: t – *testing.T; s – input string.
 // Returns: parsed *big.Int; aborts test on failure.
 func mustBigFromHex(t *testing.T, s string) *big.Int {
@@ -74,9 +74,9 @@ func mustBigFromHex(t *testing.T, s string) *big.Int {
 	return z
 }
 
-// powModHex computes c^k mod n² where c is provided as hex (or relaxed format).
+// PowModHex computes c^k mod n² where c is provided as hex (or relaxed format).
 // Params: t – *testing.T; hexC – ciphertext; k – exponent (vote count);
-//         n2 – modulus n².
+// N2 – modulus n².
 // Returns: *big.Int result of exponentiation modulo n².
 func powModHex(t *testing.T, hexC string, k int, n2 *big.Int) *big.Int {
 	t.Helper()
@@ -85,7 +85,7 @@ func powModHex(t *testing.T, hexC string, k int, n2 *big.Int) *big.Int {
 	return new(big.Int).Exp(base, exp, n2)
 }
 
-// nSquaredFromHarnessN derives n² from the harness’ configured hexN.
+// NSquaredFromHarnessN derives n² from the harness’ configured hexN.
 // Params: t – *testing.T.
 // Returns: *big.Int for n².
 func nSquaredFromHarnessN(t *testing.T) *big.Int {
@@ -96,12 +96,9 @@ func nSquaredFromHarnessN(t *testing.T) *big.Int {
 
 // ---------- Tests ----------
 
-// TestTally_ZeroVote_Identity checks that with zero valid votes, Enc(0) is the
-// multiplicative identity "1" for every candidate.
-// Params: t – *testing.T.
-// Returns: none; fails if any candidate’s sum isn’t 1.
+// TestTally_ZeroVote_Identity verifies: Tally Zero Vote Identity.
 func TestTally_ZeroVote_Identity(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t) // Put env first for consistency with other tests.
 	h := newHarness(t)
 	defer h.ctrl.Finish()
@@ -128,12 +125,9 @@ func TestTally_ZeroVote_Identity(t *testing.T) {
 	}
 }
 
-// TestTally_SimpleDistribution verifies two votes for cand1 and one for cand2
-// show up as c^2 and c^1 products respectively.
-// Params: t – *testing.T.
-// Returns: none; compares products against explicit pow(c, k) mod n².
+// TestTally_SimpleDistribution verifies: Tally Simple Distribution.
 func TestTally_SimpleDistribution(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t) // Put env first for consistency.
 	h := newHarness(t)
 	defer h.ctrl.Finish()
@@ -148,7 +142,7 @@ func TestTally_SimpleDistribution(t *testing.T) {
 	requireNoErr(t, h.setPK_UP())
 	requireNoErr(t, h.openPoll())
 
-	h.stubPreloadCandidatesOnly([]string{testCand1, testCand2}) // hot-path list small for the test.
+	h.stubPreloadCandidatesOnly([]string{testCand1, testCand2}) // Hot-path list small for the test.
 
 	// Ensure distinct shards/effects by changing TxID between casts.
 	h.setTxID("tx-0001")
@@ -175,12 +169,9 @@ func TestTally_SimpleDistribution(t *testing.T) {
 	}
 }
 
-// TestTally_RevoteChange asserts latest-wins semantics: earlier choice is
-// effectively removed and only the final candidate gets +1.
-// Params: t – *testing.T.
-// Returns: none.
+// TestTally_RevoteChange verifies: Tally Revote Change.
 func TestTally_RevoteChange(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t) // Put env first for consistency.
 	h := newHarness(t)
 	defer h.ctrl.Finish()
@@ -221,12 +212,9 @@ func TestTally_RevoteChange(t *testing.T) {
 	}
 }
 
-// TestGetEncSums_MirrorsTally ensures GetEncSums returns the same map as
-// TallyPrepare for the same state.
-// Params: t – *testing.T.
-// Returns: none; fails if any candidate differs.
+// TestGetEncSums_MirrorsTally verifies: Get Enc Sums Mirrors Tally.
 func TestGetEncSums_MirrorsTally(t *testing.T) {
-	//setDefaultEnv(t)
+	// SetDefaultEnv(t)
 	setProdEnv(t) // Put env first for consistency.
 	h := newHarness(t)
 	defer h.ctrl.Finish()
@@ -266,11 +254,7 @@ func TestGetEncSums_MirrorsTally(t *testing.T) {
 	}
 }
 
-// Test_Tally_BoothDeviceMismatch_Excluded verifies that a device ID mismatch
-// (against boothpdc) excludes the vote at tally and, once ApplyBallotStatuses
-// is called, marks the ballot invalid.
-// Params: t – *testing.T.
-// Returns: none.
+// Test_Tally_BoothDeviceMismatch_Excluded verifies: Tally Booth Device Mismatch Excluded.
 func Test_Tally_BoothDeviceMismatch_Excluded(t *testing.T) {
     setProdEnv(t)
     h := newHarness(t)
@@ -295,7 +279,7 @@ func Test_Tally_BoothDeviceMismatch_Excluded(t *testing.T) {
     // Read-only tally excludes the vote from Enc sums.
     sums, err := h.cc.TallyPrepare(h.ctx, testConst)
     requireNoErr(t, err)
-    if sums[testCand1] != "1" { // identity → excluded
+    if sums[testCand1] != "1" { // Identity → excluded
         t.Fatalf("cand1 sum must be identity due to device mismatch, got %q", sums[testCand1])
     }
 
@@ -315,7 +299,7 @@ func Test_Tally_BoothDeviceMismatch_Excluded(t *testing.T) {
 }
 
 
-// must2 is a small adapter to use requireNoErr on the second return value only.
+// Must2 is a small adapter to use requireNoErr on the second return value only.
 // Params: _ – ignored string; err – error to check.
 // Returns: the error (for requireNoErr to handle upstream).
 func must2(_ string, err error) error { return err }
