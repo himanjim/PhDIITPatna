@@ -1,0 +1,72 @@
+// -----------------------------------------------------------------------------
+// dedup.proto — Internal RPC contract for FAISS-based de-duplication benchmarking
+//
+// Design intent
+// - Provide a minimal, binary, low-overhead RPC surface for similarity search.
+// - Avoid JSON encoding; embeddings are transmitted as raw float32 bytes.
+//
+// Wire-format contract (critical)
+// - embedding_f32 must be little-endian IEEE-754 float32 array, length = EMB_DIM * 4 bytes.
+// - EMB_DIM is an agreed deployment constant (typically 512 for InsightFace/ArcFace-like models).
+//
+// Security boundary (deployment assumption)
+// - This API is intended for internal network use only and should be protected using an internal
+//   authentication mechanism (e.g., shared secret metadata header x-internal-auth) and network policy.
+// -----------------------------------------------------------------------------
+
+syntax = "proto3";
+
+package dedup;
+
+// Single-vector query. embedding_f32 is raw little-endian float32 bytes (len = EMB_DIM*4).
+message SearchRequest {
+  int64 query_id = 1;
+  bytes embedding_f32 = 2;
+}
+
+// Batch query. query_ids and embeddings_f32 must have the same length.
+message SearchBatchRequest {
+  repeated int64 query_ids = 1;
+  repeated bytes embeddings_f32 = 2;
+}
+
+// Single result + timings.
+message SearchResponse {
+  int64 query_id = 1;
+  int64 nearest_id = 2;        // -1 if no match / empty index
+  float distance_sq = 3;       // squared L2 distance, or +inf
+  float distance_l2 = 4;       // L2 distance, or +inf
+  bool is_match = 5;           // distance_l2 <= TAU_L2
+
+
+  // Timing semantics (server-measured, milliseconds):
+  // - faiss_batch_ms is the wall-clock duration of the FAISS search call for the batch that served this result.
+  // - faiss_ms is typically faiss_batch_ms / batch_size (per-item mean), and is intended for capacity reporting.
+  double faiss_ms = 6;         // average per-item FAISS time for the batch
+  double faiss_batch_ms = 7;   // wall time of the FAISS call serving this result
+  int32 batch_size = 8;        // batch size for the FAISS call serving this result
+
+  double aggregator_wait_ms = 9; // only filled by aggregator
+  string note = 10;              // "ok", "empty_index", "overloaded", etc.
+}
+
+message SearchBatchResponse {
+  repeated SearchResponse results = 1;
+  double faiss_batch_ms = 2;
+  int32 batch_size = 3;
+}
+
+// FaissDedup is the “index tier”: it owns the searchable gallery and executes nearest-neighbour search.
+// Implementations may support GPU or CPU indices, and may expose both single and batch search to enable
+// upstream microbatching.
+service FaissDedup {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
+}
+
+// FaissAggregator is an optional “microbatch tier”: it accepts single-query RPCs from many clients,
+// coalesces them into SearchBatch calls to FaissDedup, and returns individual results.
+// This amortises per-RPC overhead and stabilises tail latency under high offered load.
+service FaissAggregator {
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
