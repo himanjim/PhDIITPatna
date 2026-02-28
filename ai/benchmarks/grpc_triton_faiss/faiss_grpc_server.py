@@ -108,6 +108,13 @@ import numpy as np
 import faiss
 import grpc
 
+# ---- Admin policy/metrics endpoints (HTTP) -------------------------------
+import hashlib
+import json
+import threading
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 
 # -----------------------------------------------------------------------------
 # Make ./gen importable (avoids requiring users to export PYTHONPATH explicitly)
@@ -151,6 +158,8 @@ RANDOM_CHUNK = int(os.getenv("RANDOM_CHUNK", "100000"))
 ALLOW_EMPTY_INDEX = os.getenv("ALLOW_EMPTY_INDEX", "1") == "1"
 LOAD_INDEX_PATH = os.getenv("LOAD_INDEX_PATH", "").strip()
 
+ID_STORE = os.getenv("ID_STORE", "1") == "1"
+
 # Threading defaults: GPU indices are typically safest with workers=1.
 _default_workers = 1 if USE_GPU else 64
 FAISS_EXECUTOR_WORKERS = int(os.getenv("FAISS_EXECUTOR_WORKERS", str(_default_workers)))
@@ -179,6 +188,10 @@ REPLICA_TIMEOUT_S = float(os.getenv("REPLICA_TIMEOUT_S", "2.0"))
 # gRPC limits
 GRPC_MAX_MB = int(os.getenv("GRPC_MAX_MB", "64"))
 
+# Admin HTTP endpoints (internal only; same token as gRPC metadata)
+ADMIN_HTTP_LISTEN = os.getenv("ADMIN_HTTP_LISTEN", "").strip()  # e.g. "127.0.0.1:9100"
+METRICS_WINDOW = int(os.getenv("METRICS_WINDOW", "2048"))
+
 
 # -----------------------------------------------------------------------------
 # gRPC options
@@ -199,6 +212,130 @@ def _grpc_options():
         ("grpc.http2.min_time_between_pings_ms", 10_000),
         ("grpc.http2.min_ping_interval_without_data_ms", 10_000),
     ]
+    
+# ------------------------- Policy snapshot + metrics -------------------------
+
+def _canon_json_bytes(obj: dict) -> bytes:
+    """
+    Deterministic JSON for stable hashing.
+    (Sorted keys + no whitespace so the hash is reproducible across runs.)
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _sha256_hex(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+class _LatencyStats:
+    """Tiny fixed-window latency stats (enough for /v1/metrics)."""
+    def __init__(self, window: int):
+        self._q = deque(maxlen=window)
+
+    def add_ms(self, ms: float) -> None:
+        self._q.append(float(ms))
+
+    def summary(self) -> dict:
+        if not self._q:
+            return {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
+        xs = sorted(self._q)
+        n = len(xs)
+        return {
+            "count": n,
+            "p50_ms": xs[int(0.50 * (n - 1))],
+            "p95_ms": xs[int(0.95 * (n - 1))],
+            "p99_ms": xs[int(0.99 * (n - 1))],
+            "max_ms": xs[-1],
+        }
+
+
+def _policy_obj_faiss(mgr: FaissManager) -> dict:
+# Never include secrets in the policy object.
+    return {
+        "service": "faiss_grpc_server",
+        "version": "v3.1",
+        "emb_dim": EMB_DIM,
+        "metric": "L2",
+        "tau_l2": TAU_L2,
+        "index_type": INDEX_TYPE,
+        "use_gpu": bool(mgr.use_gpu),
+        "gpu_id": GPU_ID if mgr.use_gpu else None,
+        "id_store": bool(ID_STORE),
+        "bootstrap_mode": BOOTSTRAP_MODE,
+        "random_n": RANDOM_N,
+        "random_chunk": RANDOM_CHUNK,
+        "allow_empty_index": bool(ALLOW_EMPTY_INDEX),
+        "updates_enabled": bool(ENABLE_UPDATES),
+        "update_batch_size": UPDATE_BATCH_SIZE,
+        "update_batch_ms": UPDATE_BATCH_MS,
+        "update_max_queue": UPDATE_MAX_QUEUE,
+        "grpc_max_mb": GRPC_MAX_MB,
+        "executor_workers": FAISS_EXECUTOR_WORKERS,
+    }
+
+# Global admin state set by serve() so the handler can read metrics safely.
+_ADMIN_STATE = {
+    "mgr": None,
+    "svc": None,
+    "started_ts": time.time(),
+}
+
+class _AdminHandler(BaseHTTPRequestHandler):
+    server_version = "faiss-admin/1.0"
+
+    def _send_json(self, code: int, obj: dict) -> None:
+        b = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _auth_ok(self) -> bool:
+        # Match old service semantics: X-Internal-Auth header, fail-closed.
+        tok = self.headers.get("X-Internal-Auth", "")
+        return tok == INTERNAL_AUTH_TOKEN
+
+    def do_GET(self):  # noqa: N802
+        if self.path in ("/v1/health", "/ping"):
+            mgr = _ADMIN_STATE["mgr"]
+            nt = int(mgr.ntotal()) if mgr else 0
+            return self._send_json(200, {"status": "ok", "ntotal": nt})
+
+        if not self._auth_ok():
+            return self._send_json(403, {"detail": "forbidden"})
+
+        mgr = _ADMIN_STATE["mgr"]
+        svc = _ADMIN_STATE["svc"]
+        if mgr is None or svc is None:
+            return self._send_json(503, {"detail": "not_ready"})
+
+        if self.path == "/v1/policy":
+            pol = _policy_obj_faiss(mgr)
+            canon = _canon_json_bytes(pol)
+            return self._send_json(200, {"policy": pol, "policy_hash_sha256": _sha256_hex(canon)})
+
+        if self.path == "/v1/metrics":
+            return self._send_json(
+                200,
+                {
+                    "ntotal": int(mgr.ntotal()),
+                    "search_rpc_ms": svc.lat_search_rpc.summary(),
+                    "ingest_enqueue_ms": svc.lat_ingest_enq.summary(),
+                    "update_queue_depth": int(svc._upd_q.qsize()) if ENABLE_UPDATES else 0,
+                    "started_ts": _ADMIN_STATE["started_ts"],
+                },
+            )
+
+        return self._send_json(404, {"detail": "not_found"})
+
+
+def _start_admin_http(listen: str) -> None:
+    # Runs in a daemon thread; intended for localhost or private-network use only.
+    host, port_s = listen.rsplit(":", 1)
+    httpd = ThreadingHTTPServer((host, int(port_s)), _AdminHandler)
+    t = threading.Thread(target=httpd.serve_forever, name="faiss-admin-http", daemon=True)
+    t.start()
 
 
 # -----------------------------------------------------------------------------
@@ -209,6 +346,7 @@ class InternalAuthInterceptor(grpc.aio.ServerInterceptor):
 
     def __init__(self, expected_token: str):
         self.expected = expected_token
+                # Rolling stats for the admin /v1/metrics endpoint (transport-agnostic).
 
     async def intercept_service(self, continuation, handler_call_details):
         md = dict(handler_call_details.invocation_metadata or [])
@@ -401,6 +539,9 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
         # PRIMARY-only: outbound channels/stubs for follower replication (IngestBatch fan-out).
         self._replica_channels: List[grpc.aio.Channel] = []
         self._replica_stubs: List[dedup_pb2_grpc.FaissDedupStub] = []
+        
+        self.lat_search_rpc = _LatencyStats(METRICS_WINDOW)   # wall time per FAISS call
+        self.lat_ingest_enq = _LatencyStats(METRICS_WINDOW)   # enqueue time in IngestBatch
         if IS_PRIMARY and REPLICA_FANOUT:
             for addr in REPLICA_FANOUT:
                 ch = grpc.aio.insecure_channel(addr, options=_grpc_options())
@@ -427,6 +568,7 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
 
         D, I = await self._with_lock(_do)
         dt_ms = (time.perf_counter() - t0) * 1000.0
+        self.lat_search_rpc.add_ms(dt_ms)
         return D, I, dt_ms
 
     async def _add(self, vecs: np.ndarray, ids: np.ndarray) -> None:
@@ -438,7 +580,7 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
         """
         loop = asyncio.get_running_loop()
 
-        async def _do_add():
+        def _do_add():
             if self.mgr.use_gpu:
                 self.mgr.index_srv.add(vecs)
             else:
@@ -715,6 +857,7 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
                 break
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
+        self.lat_ingest_enq.add_ms(dt_ms)
         note = "ok" if accepted == n else "overloaded"
 
         # PRIMARY fan-out replication (optional)
@@ -734,6 +877,7 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
             enqueue_ms=dt_ms,
             note=note,
         )
+
 
 
 # -----------------------------------------------------------------------------
@@ -761,6 +905,13 @@ async def serve(listen: str):
         f"workers={FAISS_EXECUTOR_WORKERS} updates={ENABLE_UPDATES} "
         f"primary={IS_PRIMARY} fanout={len(REPLICA_FANOUT)} sync_rep={SYNC_REPLICATION} strict_rep={STRICT_REPLICATION}"
     )
+    
+    # Expose the policy/metrics endpoints if requested.
+    if ADMIN_HTTP_LISTEN:
+        _ADMIN_STATE["mgr"] = mgr
+        _ADMIN_STATE["svc"] = svc
+        _start_admin_http(ADMIN_HTTP_LISTEN)
+        print(f"[FAISS ADMIN] http://{ADMIN_HTTP_LISTEN} (auth via X-Internal-Auth)")
 
     await server.wait_for_termination()
 

@@ -32,6 +32,12 @@ from typing import List
 
 import grpc
 
+import hashlib
+import json
+import threading
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 
 ROOT = Path(__file__).resolve().parent
 GEN = ROOT / "gen"
@@ -68,11 +74,14 @@ AGG_MAX_DOWNSTREAM_INFLIGHT = int(os.getenv("AGG_MAX_DOWNSTREAM_INFLIGHT", "50")
 AGG_DOWNSTREAM_TIMEOUT_S = float(os.getenv("AGG_DOWNSTREAM_TIMEOUT_S", "5"))
 GRPC_MAX_MB = int(os.getenv("GRPC_MAX_MB", "64"))
 
+ADMIN_HTTP_LISTEN = os.getenv("ADMIN_HTTP_LISTEN", "").strip()  # e.g. "127.0.0.1:9200"
+METRICS_WINDOW = int(os.getenv("METRICS_WINDOW", "2048"))
+
 
 class InternalAuthInterceptor(grpc.aio.ServerInterceptor):
     def __init__(self, expected_token: str):
         self.expected = expected_token
-
+        
     async def intercept_service(self, continuation, handler_call_details):
         md = dict(handler_call_details.invocation_metadata or [])
         tok = md.get("x-internal-auth", "")
@@ -88,8 +97,99 @@ class _Pending:
     req: dedup_pb2.SearchRequest
     fut: asyncio.Future
     t_enq: float
+    t_call: float
+    
+    
+# ------------------------- Policy snapshot + metrics -------------------------
+
+def _canon_json_bytes(obj: dict) -> bytes:
+    """
+    Deterministic JSON for stable hashing.
+    (Sorted keys + no whitespace so the hash is reproducible across runs.)
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _sha256_hex(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+class _LatencyStats:
+    """Tiny fixed-window latency stats (enough for /v1/metrics)."""
+    def __init__(self, window: int):
+        self._q = deque(maxlen=window)
+
+    def add_ms(self, ms: float) -> None:
+        self._q.append(float(ms))
+
+    def summary(self) -> dict:
+        if not self._q:
+            return {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
+        xs = sorted(self._q)
+        n = len(xs)
+        return {
+            "count": n,
+            "p50_ms": xs[int(0.50 * (n - 1))],
+            "p95_ms": xs[int(0.95 * (n - 1))],
+            "p99_ms": xs[int(0.99 * (n - 1))],
+            "max_ms": xs[-1],
+        }
+
+# ---- Admin HTTP endpoints (module scope) ----
+_ADMIN_STATE = {"agg": None, "faiss_addr": None, "started_ts": time.time()}
+
+class _AdminHandler(BaseHTTPRequestHandler):
+    server_version = "faiss-agg-admin/1.0"
+
+    def _send_json(self, code: int, obj: dict) -> None:
+        b = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _auth_ok(self) -> bool:
+        return self.headers.get("X-Internal-Auth", "") == INTERNAL_AUTH_TOKEN
+
+    def do_GET(self):  # noqa: N802
+        if self.path in ("/v1/health", "/ping"):
+            agg = _ADMIN_STATE["agg"]
+            qd = int(agg.q.qsize()) if agg else 0
+            return self._send_json(200, {"status": "ok", "queue_depth": qd})
+
+        if not self._auth_ok():
+            return self._send_json(403, {"detail": "forbidden"})
+
+        agg = _ADMIN_STATE["agg"]
+        faiss_addr = _ADMIN_STATE["faiss_addr"]
+        if agg is None or faiss_addr is None:
+            return self._send_json(503, {"detail": "not_ready"})
+
+        if self.path == "/v1/policy":
+            pol = _policy_obj_agg(faiss_addr)
+            canon = _canon_json_bytes(pol)
+            return self._send_json(200, {"policy": pol, "policy_hash_sha256": _sha256_hex(canon)})
+
+        if self.path == "/v1/metrics":
+            return self._send_json(
+                200,
+                {
+                    "queue_depth": int(agg.q.qsize()),
+                    "rpc_ms": agg.lat_rpc.summary(),
+                    "agg_wait_ms": agg.lat_wait.summary(),
+                    "faiss_batch_ms": agg.lat_faiss_batch.summary(),
+                    "started_ts": _ADMIN_STATE["started_ts"],
+                },
+            )
+
+        return self._send_json(404, {"detail": "not_found"})
+
+def _start_admin_http(listen: str) -> None:
+    host, port_s = listen.rsplit(":", 1)
+    httpd = ThreadingHTTPServer((host, int(port_s)), _AdminHandler)
+    t = threading.Thread(target=httpd.serve_forever, name="faiss-agg-admin-http", daemon=True)
+    t.start()
 
 # -----------------------------------------------------------------------------
 # gRPC channel/server tuning
@@ -109,6 +209,16 @@ def _grpc_options():
         ("grpc.http2.min_time_between_pings_ms", 10_000),
         ("grpc.http2.min_ping_interval_without_data_ms", 10_000),
     ]
+    
+def _policy_obj_agg(faiss_addr: str) -> dict:
+    return {
+        "service": "faiss_grpc_aggregator",
+        "version": "v3.1",
+        "microbatch_ms": AGG_MICROBATCH_MS,
+        "microbatch_max": AGG_MICROBATCH_MAX,
+        "max_inflight": AGG_MAX_INFLIGHT,
+        "downstream_faiss": faiss_addr,
+    }
 
 
 class FaissAggregatorServicer(dedup_pb2_grpc.FaissAggregatorServicer):
@@ -116,12 +226,16 @@ class FaissAggregatorServicer(dedup_pb2_grpc.FaissAggregatorServicer):
         self.faiss = faiss_stub
         self.q: "asyncio.Queue[_Pending]" = asyncio.Queue(maxsize=AGG_MAX_INFLIGHT)
         self.downstream_sem = asyncio.Semaphore(AGG_MAX_DOWNSTREAM_INFLIGHT)
+        
+        self.lat_rpc = _LatencyStats(METRICS_WINDOW)
+        self.lat_wait = _LatencyStats(METRICS_WINDOW)
+        self.lat_faiss_batch = _LatencyStats(METRICS_WINDOW)
 
     async def Search(self, request, context):
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         try:
-            self.q.put_nowait(_Pending(req=request, fut=fut, t_enq=time.perf_counter()))
+            self.q.put_nowait(_Pending(req=request, fut=fut, t_enq=time.perf_counter(), t_call=time.perf_counter()))
         except asyncio.QueueFull:
             await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "overloaded")
         return await fut
@@ -151,11 +265,22 @@ class FaissAggregatorServicer(dedup_pb2_grpc.FaissAggregatorServicer):
 
             async with self.downstream_sem:
                 try:
+                    t0 = time.perf_counter()
                     bresp = await self.faiss.SearchBatch(breq, timeout=AGG_DOWNSTREAM_TIMEOUT_S, metadata=md)
+                    self.lat_faiss_batch.add_ms((time.perf_counter() - t0) * 1000.0)
                 except grpc.aio.AioRpcError as e:
                     for p in batch:
                         if p.fut.done():
                             continue
+                            
+                        now = time.perf_counter()
+                        wait_ms = (now - p.t_enq) * 1000.0
+                        rpc_ms = (now - p.t_call) * 1000.0
+
+                        # Aggregator-side latency accounting (cheap O(1) append)
+                        self.lat_wait.add_ms(wait_ms)
+                        self.lat_rpc.add_ms(rpc_ms)
+
                         p.fut.set_result(dedup_pb2.SearchResponse(
                             query_id=p.req.query_id,
                             nearest_id=-1,
@@ -179,6 +304,14 @@ class FaissAggregatorServicer(dedup_pb2_grpc.FaissAggregatorServicer):
             for p in batch:
                 if p.fut.done():
                     continue
+                    
+                now = time.perf_counter()
+                wait_ms = (now - p.t_enq) * 1000.0
+                rpc_ms = (now - p.t_call) * 1000.0
+
+                self.lat_wait.add_ms(wait_ms)
+                self.lat_rpc.add_ms(rpc_ms)    
+                
                 r = by_id.get(p.req.query_id)
                 if r is None:
                     p.fut.set_result(dedup_pb2.SearchResponse(
@@ -222,6 +355,12 @@ async def serve(listen: str, faiss_addr: str):
     dedup_pb2_grpc.add_FaissAggregatorServicer_to_server(agg, server)
     server.add_insecure_port(listen)
     await server.start()
+    
+    if ADMIN_HTTP_LISTEN:
+        _ADMIN_STATE["agg"] = agg
+        _ADMIN_STATE["faiss_addr"] = faiss_addr
+        _start_admin_http(ADMIN_HTTP_LISTEN)
+        print(f"[AGG ADMIN] http://{ADMIN_HTTP_LISTEN} (auth via X-Internal-Auth)")
 
     print(f"[AGG gRPC] listen={listen} -> faiss={faiss_addr} microbatch={AGG_MICROBATCH_MS}ms max={AGG_MICROBATCH_MAX} inflight={AGG_MAX_INFLIGHT} downstream_inflight={AGG_MAX_DOWNSTREAM_INFLIGHT}")
     asyncio.create_task(agg.microbatch_loop())
