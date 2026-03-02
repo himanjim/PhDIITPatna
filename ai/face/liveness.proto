@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package livenessbench.v1;
+
+// Liveness benchmarking API (clip-cache mode)
+// Replicas preload MP4 clips into RAM (decoded BGR frames).
+// Requests send only: clip_id + prompt (+ optional max_frames).
+//
+// Optional auth via metadata:
+//   x-internal-auth: <token>
+//
+// Response includes:
+//   - server_compute_ms: measured only around the liveness pipeline call
+//   - metrics: scalars + timings from liveness_check.py, plus server_total_ms
+
+service LivenessBench {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetPolicy(PolicyRequest) returns (PolicyResponse);
+  rpc ListClips(ListClipsRequest) returns (ListClipsResponse);
+  rpc CheckByClipId(CheckByClipIdRequest) returns (CheckByClipIdResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;        // "ok"
+  string replica_id = 2;    // replica id; aggregator returns "aggregator"
+}
+
+message PolicyRequest {}
+
+message PolicyResponse {
+  string policy_hash_domain = 1;
+  string policy_hash_sha256 = 2;
+  string policy_json = 3;         // canonical JSON (sorted keys)
+}
+
+message ListClipsRequest {}
+
+message ListClipsResponse {
+  repeated string clip_ids = 1;   // file stems, e.g., IDLE.mp4 -> "IDLE"
+}
+
+message CheckByClipIdRequest {
+  string request_id = 1;          // optional trace id
+  string clip_id = 2;             // must exist in ListClips()
+  string prompt = 3;              // "none" | "blink" | "pose"
+  int32 max_frames = 4;           // 0 => server default
+}
+
+message CheckByClipIdResponse {
+  bool ok = 1;
+  string why = 2;
+  string reason_code = 3;
+  string replica_id = 4;
+
+  double server_compute_ms = 5;   // compute-only
+  map<string, double> metrics = 6;
+
+  string policy_hash_domain = 7;
+  string policy_hash_sha256 = 8;
+}
