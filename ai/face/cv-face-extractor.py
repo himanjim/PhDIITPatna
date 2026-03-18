@@ -1,3 +1,10 @@
+# This script extracts one padded face crop from each image in a local
+# folder and writes the result to a separate output directory. It uses the
+# MediaPipe face detector to locate faces, selects the largest detected
+# face in each image, expands the bounding box with padding, and resizes
+# the crop to a fixed output size. The resulting images are suitable for
+# later inspection or downstream model experiments that require roughly
+# aligned face crops.
 import cv2
 import mediapipe as mp
 import os
@@ -7,7 +14,7 @@ import tensorflow as tf
 print("[INFO] Available GPUs:", tf.config.list_physical_devices('GPU'))
 
 
-# Detect Downloads folder path (Windows)
+# Resolve the Windows Downloads directory used as the default input and output base.
 downloads_path = os.path.join(os.environ["USERPROFILE"], "Downloads")
 downloads_folder = Path(downloads_path).as_posix()
 
@@ -18,7 +25,8 @@ os.makedirs(output_folder, exist_ok=True)
 mp_face_detection = mp.solutions.face_detection
 mp_drawing = mp.solutions.drawing_utils
 
-# MediaPipe face detector
+# Run the MediaPipe face detector over each supported image in the input
+# folder and save one resized crop for the largest detected face.
 with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
     for filename in os.listdir(input_folder):
         if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
@@ -45,10 +53,14 @@ with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence
             area = box_w * box_h
             faces.append((area, xmin, ymin, box_w, box_h))
 
+        # Select the largest detected face so that the crop corresponds to
+        # the most likely primary subject when multiple faces are present.
         largest = max(faces, key=lambda x: x[0])
         _, x, y, bw, bh = largest
 
-        # Add padding like webcam
+        # Expand the detected face region with symmetric padding so that
+        # the crop retains some surrounding context rather than cutting too
+        # tightly around the face.
         pad_ratio = 0.5
         pad_x = int(bw * pad_ratio)
         pad_y = int(bh * pad_ratio)
