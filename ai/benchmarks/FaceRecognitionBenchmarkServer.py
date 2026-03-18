@@ -1,3 +1,14 @@
+# This module implements a minimal face-verification microservice that
+# exposes a single HTTP endpoint for receiving an uploaded image,
+# generating a facial embedding using DeepFace, and performing a nearest-
+# neighbour lookup in a FAISS index. The service is intended primarily for
+# functional validation and latency benchmarking of an embedding-plus-
+# search pipeline rather than for production-scale identity verification.
+# A synthetic FAISS index is initialised at startup to ensure that search
+# behaviour can be exercised even when no real enrolment database is
+# available. The returned response contains only the closest match index
+# and its distance score so that external benchmarking clients can measure
+# end-to-end behaviour without exposing unnecessary internal state.
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 import numpy as np
@@ -19,6 +30,14 @@ faiss_index.add(dummy_embeddings)
 # Initialize FastAPI app
 app = FastAPI()
 
+# Handle a single face-verification request by decoding the uploaded image,
+# extracting a fixed-length embedding vector, and querying the FAISS index
+# for the nearest stored representation. The function performs minimal
+# preprocessing and does not enforce strict face detection constraints so
+# that benchmarking runs remain robust to imperfect inputs. The response
+# provides the index position of the closest candidate together with the
+# associated distance value, enabling downstream systems or evaluation
+# scripts to interpret similarity outcomes.
 @app.post("/verify")
 async def verify_face(file: UploadFile = File(...)):
     try:
