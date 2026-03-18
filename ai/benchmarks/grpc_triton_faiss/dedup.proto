@@ -1,34 +1,56 @@
+// This Protocol Buffers definition specifies the internal gRPC contract
+// for similarity search and index-ingest operations in the FAISS-based
+// de-duplication service. The interface separates online search from
+// background or bulk index updates, while allowing both single-query and
+// batch-query interactions. Embeddings are transferred as raw float32 byte
+// arrays rather than JSON structures so that transport overhead remains
+// low and the wire format stays consistent across benchmark and service
+// implementations. Correct use of this contract requires prior agreement
+// on embedding dimensionality, byte order, and distance interpretation.
+
 syntax = "proto3";
 
 package dedup;
 
 // ---------- Search (online) ----------
-
+// Request message for a single online similarity search. The embedding is
+// supplied as a raw float32 byte array, and query_id allows the caller to
+// correlate the response with the originating request.
 message SearchRequest {
   int64 query_id = 1;
   bytes embedding_f32 = 2;
 }
 
+// Request message for batch similarity search. The two repeated fields are
+// positionally aligned: each entry in embeddings_f32 must correspond to
+// the query identifier at the same index in query_ids.
 message SearchBatchRequest {
   repeated int64 query_ids = 1;
   repeated bytes embeddings_f32 = 2;
 }
 
+// Response message for a single nearest-neighbour search. In addition to
+// the match identifier and distance values, the message carries timing and
+// batching metadata that help distinguish pure FAISS processing time from
+// upstream aggregation delay during benchmark analysis.
 message SearchResponse {
   int64 query_id = 1;
   int64 nearest_id = 2;
-  float distance_sq = 3;
-  float distance_l2 = 4;
-  bool is_match = 5;
+  float distance_sq = 3;  // Squared L2 distance returned by the search tier.
+  float distance_l2 = 4;  // Euclidean distance derived from the same match.
+  bool is_match = 5;      // True when distance_l2 is within the acceptance threshold.
 
-  double faiss_ms = 6;
-  double faiss_batch_ms = 7;
-  int32 batch_size = 8;
+  double faiss_ms = 6;            // Mean per-item FAISS processing time for the serving batch, in milliseconds.
+  double faiss_batch_ms = 7;      // Wall-clock FAISS batch processing time, in milliseconds.
+  int32 batch_size = 8;           // Batch size used for the FAISS call that produced this result.
 
-  double aggregator_wait_ms = 9;
-  string note = 10;
+  double aggregator_wait_ms = 9;  // Time spent waiting in the aggregation layer before dispatch, in milliseconds.
+  string note = 10;               // Service status note such as "ok", "queued", or "empty_index".
 }
 
+// Response message for batch search. It returns one SearchResponse per
+// submitted query together with summary metadata for the FAISS batch call
+// that served the request.
 message SearchBatchResponse {
   repeated SearchResponse results = 1;
   double faiss_batch_ms = 2;
@@ -36,12 +58,17 @@ message SearchBatchResponse {
 }
 
 // ---------- Ingest (index updates) ----------
-
+// Request message for batch index updates. Each embedding is paired
+// positionally with the identifier at the same index in ids, allowing the
+// service to enqueue or accept multiple additions in a single call.
 message IngestBatchRequest {
   repeated int64 ids = 1;
-  repeated bytes embeddings_f32 = 2;
+  repeated bytes embeddings_f32 = 2;  // Raw little-endian IEEE-754 float32 bytes, one per query.
 }
 
+// Response message for a batch-ingest request. The fields indicate how
+// many items were accepted immediately, how many were queued for later
+// processing, and how long the enqueue step took on the server side.
 message IngestBatchResponse {
   int32 accepted = 1;
   int32 queued = 2;
@@ -49,12 +76,19 @@ message IngestBatchResponse {
   string note = 4;
 }
 
+// Core vector-search and index-management service. It exposes methods for
+// single-query search, batch search, and batch ingest so that clients can
+// use one contract for both online matching and controlled index growth.
 service FaissDedup {
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
   rpc IngestBatch(IngestBatchRequest) returns (IngestBatchResponse);
 }
 
+// Optional front-end service that accepts single-query search requests and
+// may aggregate them before forwarding work to the underlying FAISS tier.
+# The returned contract remains identical to the single-query search
+# response so that clients do not need separate parsing logic.
 service FaissAggregator {
   rpc Search(SearchRequest) returns (SearchResponse);
 }
