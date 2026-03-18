@@ -1,6 +1,10 @@
-# faiss_microservice.py
-# A standalone FAISS REST service to handle vector search centrally,
-# with live index updating upon each query and separate timing for search and update steps.
+# This module implements a minimal FastAPI wrapper around a FAISS index for
+# experimental similarity search. On each request, it performs a
+# nearest-neighbour lookup and then appends the submitted vector to the
+# same index, allowing the index to grow during the run. The service is
+# therefore appropriate for benchmarking and functional experiments, but
+# it should not be read as an election-grade or audit-oriented service
+# design.
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -49,11 +53,14 @@ app = FastAPI()
 # Thread lock to synchronize access to the FAISS index
 index_lock = threading.Lock()
 
-# Define input data model for vector search
+# Request model for a single embedding query submitted as a JSON float
+# list.
 class QueryVector(BaseModel):
     vector: list  # Must contain EMBEDDING_DIM floats representing the face embedding
 
-# Define the /search endpoint to accept POST requests with embedding vectors
+# Execute one similarity-search request against the current FAISS index,
+# then append the submitted embedding to the index under the same lock so
+# that search and update remain serialised.
 @app.post("/search")
 def search(query: QueryVector):
     try:
