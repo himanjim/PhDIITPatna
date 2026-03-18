@@ -1,45 +1,56 @@
-// -----------------------------------------------------------------------------
-// dedup.proto — Internal RPC contract for FAISS-based de-duplication benchmarking
-//
-// Design intent
-// - Provide a minimal, binary, low-overhead RPC surface for similarity search.
-// - Avoid JSON encoding; embeddings are transmitted as raw float32 bytes.
-//
-// Wire-format contract (critical)
-// - embedding_f32 must be little-endian IEEE-754 float32 array, length = EMB_DIM * 4 bytes.
-// - EMB_DIM is an agreed deployment constant (typically 512 for InsightFace/ArcFace-like models).
-//
-// Security boundary (deployment assumption)
-// - This API is intended for internal network use only and should be protected using an internal
-//   authentication mechanism (e.g., shared secret metadata header x-internal-auth) and network policy.
-// -----------------------------------------------------------------------------
+// This Protocol Buffers definition specifies the internal gRPC contract used
+// for FAISS-based de-duplication search and benchmarking. The interface is
+// intentionally narrow: clients submit one embedding, or a batch of
+// embeddings, as raw float32 byte arrays and receive nearest-neighbour
+// results together with selected server-side timing fields. The contract is
+// designed for low-overhead transport within a trusted internal deployment,
+// where binary embedding transfer is preferred to JSON serialization for
+// efficiency and reproducibility. Correct interpretation of the payload
+// requires prior agreement on embedding dimensionality, byte order, and
+// distance semantics.
 
 syntax = "proto3";
 
 package dedup;
 
-// Single-vector query. embedding_f32 is raw little-endian float32 bytes (len = EMB_DIM*4).
+// Request message for a single embedding search. The embedding is supplied
+// as raw little-endian IEEE-754 float32 bytes, with total length equal to
+// EMB_DIM × 4. The query_id field is an application-level identifier that
+// allows clients to correlate responses with submitted requests.
 message SearchRequest {
   int64 query_id = 1;
   bytes embedding_f32 = 2;
 }
 
-// Batch query. query_ids and embeddings_f32 must have the same length.
+// Request message for batch search. Each entry in embeddings_f32 must
+// correspond positionally to the query identifier at the same index in
+// query_ids. This structure is intended for services that perform batched
+// nearest-neighbour search in order to improve throughput or reduce
+// per-request overhead.
 message SearchBatchRequest {
   repeated int64 query_ids = 1;
   repeated bytes embeddings_f32 = 2;
 }
 
-// Single result + timings.
+// Response message for a single nearest-neighbour query. In addition to the
+// returned identifier and distance values, the message carries timing and
+// batching metadata that can be used for capacity analysis and benchmark
+// interpretation. Distance fields are reported in both squared-L2 and L2
+// form so that downstream systems do not need to infer or recompute the
+// metric semantics.
 message SearchResponse {
   int64 query_id = 1;
   int64 nearest_id = 2;        // -1 if no match / empty index
-  float distance_sq = 3;       // squared L2 distance, or +inf
-  float distance_l2 = 4;       // L2 distance, or +inf
-  bool is_match = 5;           // distance_l2 <= TAU_L2
+  float distance_sq = 3;       / Squared L2 distance; +inf if no valid result is available.
+  float distance_l2 = 4;       // Euclidean distance; +inf if no valid result is available.
+  bool is_match = 5;           // True when distance_l2 is within the configured acceptance threshold.
 
 
-  // Timing semantics (server-measured, milliseconds):
+  // Timing fields are measured on the server side and reported in
+  // milliseconds. They are intended for operational analysis and benchmark
+  // interpretation rather than for strict cross-system comparison, since
+  // their exact meaning depends on where measurement is taken in the
+  // serving stack.
   // - faiss_batch_ms is the wall-clock duration of the FAISS search call for the batch that served this result.
   // - faiss_ms is typically faiss_batch_ms / batch_size (per-item mean), and is intended for capacity reporting.
   double faiss_ms = 6;         // average per-item FAISS time for the batch
@@ -47,7 +58,7 @@ message SearchResponse {
   int32 batch_size = 8;        // batch size for the FAISS call serving this result
 
   double aggregator_wait_ms = 9; // only filled by aggregator
-  string note = 10;              // "ok", "empty_index", "overloaded", etc.
+  string note = 10;              // Human-readable service status such as "ok", "empty_index", or "overloaded".
 }
 
 message SearchBatchResponse {
@@ -56,17 +67,20 @@ message SearchBatchResponse {
   int32 batch_size = 3;
 }
 
-// FaissDedup is the “index tier”: it owns the searchable gallery and executes nearest-neighbour search.
-// Implementations may support GPU or CPU indices, and may expose both single and batch search to enable
-// upstream microbatching.
+// Core search service that owns the searchable vector index and executes
+// nearest-neighbour retrieval. Implementations may be backed by CPU or GPU
+// FAISS indices and may expose both single-query and batch-query methods
+// so that upstream components can choose the most suitable calling pattern.
 service FaissDedup {
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
 }
 
-// FaissAggregator is an optional “microbatch tier”: it accepts single-query RPCs from many clients,
-// coalesces them into SearchBatch calls to FaissDedup, and returns individual results.
-// This amortises per-RPC overhead and stabilises tail latency under high offered load.
+// Optional front-end aggregation service that accepts single-query RPCs
+// from multiple clients, combines them into batch requests for the index
+// service, and then returns one response per original query. This design
+// can reduce per-request transport overhead and improve tail behaviour
+// when the offered load is high and naturally bursty.
 service FaissAggregator {
   rpc Search(SearchRequest) returns (SearchResponse);
 }
