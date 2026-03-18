@@ -1,28 +1,16 @@
 #!/usr/bin/env python3
 """
-liveness_grpc_server.py
+This module implements one gRPC replica of the liveness service in a
+clip-cache benchmarking mode. Video clips are decoded and loaded into
+memory at startup, and each RPC refers only to a clip identifier, a
+prompt type, and a frame limit. This design removes repeated video I/O
+from the request path so that the measured service time is dominated by
+the liveness pipeline itself rather than by media loading overhead.
 
-One “replica” gRPC server for liveness benchmarking (clip-cache mode).
-
-Key measurement
----------------
-- Preload MP4 clips into RAM at startup (decoded BGR frames).
-- RPC carries only (clip_id, prompt, max_frames).
-- server_compute_ms is measured around core.run_liveness(...) only.
-
-Concurrency control
--------------------
-Even if gRPC accepts many concurrent requests, do not run unlimited in-flight
-liveness calls on one GPU/one process. We cap compute concurrency via a semaphore
-(MAX_INFER_CONCURRENCY). Start with 1, increase only if validated.
-
-Optional auth
--------------
-If INTERNAL_AUTH_TOKEN is set, the request must include metadata:
-  x-internal-auth: <token>
-
-Build stubs (once):
-  python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. liveness.proto
+The service exposes health, policy, clip-list, and liveness-check RPCs.
+It also applies explicit concurrency control through a semaphore so that
+the number of simultaneous liveness computations remains bounded even
+when gRPC accepts many concurrent requests.
 """
 
 from __future__ import annotations
@@ -96,7 +84,9 @@ _POLICY_OBJ = {
 _POLICY_JSON = json.dumps(_POLICY_OBJ, sort_keys=True, separators=(",", ":"))
 _POLICY_HASH = hashlib.sha256((_POLICY_DOMAIN + "\n" + _POLICY_JSON).encode("utf-8")).hexdigest()
 
-
+# Map free-text failure explanations returned by the liveness core into a
+# smaller set of structured reason codes suitable for benchmarking,
+# logging, and downstream analysis.
 def _reason_code(why: str) -> str:
     w = (why or "").lower()
     if "multiple/no faces" in w or "no face" in w or "onefacefrac" in w or "twoplusfrac" in w:
@@ -117,7 +107,9 @@ def _reason_code(why: str) -> str:
         return "PROMPT_POSE_FAIL"
     return "FAIL_OTHER"
 
-
+# Enforce the optional internal authentication boundary for incoming RPCs.
+# When an internal token is configured, requests must present the expected
+# metadata header or the call is rejected immediately.
 def _auth_or_abort(context: grpc.ServicerContext) -> None:
     if not INTERNAL_AUTH_TOKEN:
         return
@@ -130,7 +122,9 @@ def _parse_bind(bind: str) -> str:
     bind = bind.strip()
     return ("0.0.0.0" + bind) if bind.startswith(":") else bind
 
-
+# Build the shared liveness runtime context used by the replica, including
+# the detector and MediaPipe components configured through environment
+# variables.
 def _build_ctx() -> core.LivenessContext:
     ctx_id_val: Optional[int] = None
     if str(CTX_ID).strip():
@@ -150,7 +144,10 @@ def _build_ctx() -> core.LivenessContext:
         mp_min_track=0.6,
     )
 
-
+# Load all supported video clips from the configured directory into an
+# in-memory cache keyed by clip identifier. This moves decoding cost out
+# of the RPC path so that benchmark timings reflect liveness evaluation
+# rather than repeated media access.
 def _load_clips(clips_dir: Path, preload_max_frames: int, resize_w: int) -> Dict[str, List]:
     if not clips_dir.is_dir():
         raise SystemExit(f"clips-dir not found: {clips_dir}")
@@ -182,8 +179,15 @@ def _load_clips(clips_dir: Path, preload_max_frames: int, resize_w: int) -> Dict
 
     return cache
 
-
+# Implement the gRPC service interface for one liveness replica. The
+# servicer exposes lightweight metadata endpoints and the main clip-based
+# liveness RPC, while enforcing bounded compute concurrency through a
+# process-local semaphore.
 class LivenessBenchServicer(liveness_pb2_grpc.LivenessBenchServicer):
+  
+        # Initialise the replica with its clip cache, shared liveness
+        # context, case-insensitive clip lookup map, and the semaphore used
+        # to limit concurrent liveness computations.
     def __init__(self, *, replica_id: str, clips: Dict[str, List], ctx: core.LivenessContext):
         self._replica_id = replica_id
         self._clips = clips
@@ -191,9 +195,12 @@ class LivenessBenchServicer(liveness_pb2_grpc.LivenessBenchServicer):
         self._clip_id_by_lower = {k.lower(): k for k in clips.keys()}
         self._sem = threading.Semaphore(max(1, int(MAX_INFER_CONCURRENCY)))
 
+    # Return a minimal liveness and identity check for the replica itself.
     def Health(self, request, context):
         return liveness_pb2.HealthResponse(status="ok", replica_id=self._replica_id)
 
+    # Return the current policy object and its hash so that callers can
+    # verify which liveness thresholds and detector settings are active.
     def GetPolicy(self, request, context):
         _auth_or_abort(context)
         return liveness_pb2.PolicyResponse(
@@ -202,10 +209,16 @@ class LivenessBenchServicer(liveness_pb2_grpc.LivenessBenchServicer):
             policy_json=_POLICY_JSON,
         )
 
+    # Return the identifiers of all clips currently available in the local
+    # in-memory cache.
     def ListClips(self, request, context):
         _auth_or_abort(context)
         return liveness_pb2.ListClipsResponse(clip_ids=sorted(self._clips.keys()))
 
+    # Execute one liveness check against a cached clip. The method validates
+    # the request, applies the configured frame cap and prompt handling,
+    # measures queue-plus-compute time at the service boundary, and returns
+    # both a binary outcome and a structured set of diagnostic metrics.
     def CheckByClipId(self, request, context):
         _auth_or_abort(context)
 
@@ -275,7 +288,9 @@ class LivenessBenchServicer(liveness_pb2_grpc.LivenessBenchServicer):
             policy_hash_sha256=_POLICY_HASH,
         )
 
-
+# Parse command-line arguments, initialise the shared runtime context and
+# clip cache, optionally perform a warmup pass, and then start the gRPC
+# replica server.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bind", default="0.0.0.0:9101")
