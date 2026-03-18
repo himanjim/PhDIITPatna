@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-faiss_grpc_bench_optimized.py
------------------------------
-Synthetic embeddings and validity of results
---------------------------------------------
-This benchmark generates synthetic float32 embeddings for throughput/latency measurement of the FAISS
-serving tier. This is appropriate when the research question is service capacity (RPC overhead, queueing,
-microbatching effectiveness, GPU/CPU utilisation), rather than biometric accuracy. If distributional
-effects (e.g., distance concentration, thresholding behaviour) are under study, embeddings should be
-derived from the same face model used in the full pipeline.
+This script benchmarks the gRPC serving tier of a FAISS-based similarity
+search system under synthetic embedding load. It supports two execution
+modes: direct batch calls to the FAISS search service and single-query
+calls to an upstream aggregator that may microbatch requests before
+forwarding them downstream. The benchmark is designed to measure service-
+level behaviour such as RPC latency, queueing effects, batching overhead,
+and overload responses, rather than biometric recognition accuracy.
 
-Deadlines and overload behaviour
---------------------------------
-Per-RPC timeouts (deadlines) are treated as first-class signals of overload or network impairment.
-A “fail-fast” design (explicit deadlines + bounded inflight) is preferable to unbounded queue growth,
-because it stabilises p95/p99 and yields interpretable capacity curves for reviewers.
+Synthetic embeddings are appropriate here because the purpose of the test
+is capacity and latency characterisation of the serving path. If the
+research question instead concerns embedding distribution, threshold
+behaviour, or biometric decision quality, the workload should be generated
+from the same face model used in the full verification pipeline.
 """
 
 from __future__ import annotations
@@ -32,9 +30,10 @@ from typing import List, Tuple
 import numpy as np
 import grpc
 
-# The benchmark is designed to run from a cloned folder without requiring the user to export PYTHONPATH.
-# We therefore attempt to load generated protobuf stubs from ./gen (local, reproducible setup) and fall
-# back to 'from gen import ...' if the user kept package-style imports.
+# Locate the generated protobuf client stubs from a small set of project-
+# local paths so that the benchmark can run from a checked-out directory
+# without requiring manual PYTHONPATH configuration. This improves
+# reproducibility across development and experimental environments.
 # ------------------------- Import stubs without PYTHONPATH pain ------------------------- #
 ROOT = Path(__file__).resolve().parent
 GEN = ROOT / "gen"
@@ -63,7 +62,9 @@ GRPC_MAX_MB = int(os.getenv("GRPC_MAX_MB", "64"))
 
 
 # ------------------------- Stats helpers ------------------------- #
-
+# Compute a simple empirical percentile from a list of observed values.
+# This helper is used for benchmark summaries where consistent reporting
+# across runs is more important than interpolation sophistication.
 def _percentile(xs: List[float], p: float) -> float:
     if not xs:
         return float("nan")
@@ -72,7 +73,9 @@ def _percentile(xs: List[float], p: float) -> float:
     k = max(0, min(len(ys) - 1, k))
     return ys[k]
 
-
+# Summarise a list of latency measurements using a compact set of
+# descriptive statistics commonly reported in systems benchmarking,
+# including p50, p95, p99, mean, and maximum.
 def _stat(vals: List[float]) -> dict:
     return {
         "count": len(vals),
@@ -83,16 +86,20 @@ def _stat(vals: List[float]) -> dict:
         "max": max(vals) if vals else float("nan"),
     }
 
-# Embedding wire format contract:
-# - Raw little-endian float32 bytes, length = EMB_DIM * 4.
-# - This avoids JSON float lists (large payload, expensive parsing) and keeps transport overhead small.
+# Generate one synthetic embedding in the wire format expected by the gRPC
+# services. The vector is sampled from a standard normal distribution,
+# stored as float32, and serialized as raw bytes so that payload size and
+# parsing overhead remain close to the intended service contract.
 def _rand_emb_bytes() -> bytes:
     v = _RNG.standard_normal((EMB_DIM,), dtype=np.float32)
     return v.tobytes()
 
 
 # ------------------------- Benchmark modes ------------------------- #
-
+# Lightweight container for the outcome of one completed benchmarked RPC or
+# batch RPC. It stores whether the call is considered successful together
+# with client-observed latency and selected timing fields reported by the
+# server.
 class Sample:
     __slots__ = ("ok", "rpc_ms", "faiss_ms", "agg_wait_ms", "note")
     def __init__(self, ok: bool, rpc_ms: float, faiss_ms: float, agg_wait_ms: float, note: str):
@@ -102,16 +109,21 @@ class Sample:
         self.agg_wait_ms = agg_wait_ms
         self.note = note
 
-# Channel readiness check prevents “silent zero-work” runs where no RPCs execute due to DNS/firewall/
-# wrong address. If the channel cannot transition to READY within the timeout, fail loudly.
+# Verify that the gRPC channel becomes ready before the timed portion of
+# the benchmark begins. This prevents runs from appearing artificially
+# successful when no effective RPC traffic is possible because of address,
+# connectivity, or service-availability problems.
 async def _channel_ready(ch: grpc.aio.Channel, timeout_s: float = 3.0) -> None:
     """Fail fast if channel cannot become READY."""
     await asyncio.wait_for(ch.channel_ready(), timeout=timeout_s)
 
-# Sanity RPC rationale:
-# This 1-item request validates end-to-end wiring (auth metadata, service availability, stub compatibility)
-# before the timed run begins, so subsequent throughput/latency statistics cannot be attributed to a
-# misconfiguration that prevented RPC execution.
+# Benchmark the direct batch-search interface exposed by the FAISS service.
+# The workload generator issues SearchBatch RPCs at a configured offered
+# rate, using synthetic embeddings and bounded client-side concurrency. A
+# short sanity request is performed before timing begins so that measured
+# results are not confounded by missing authentication, stub mismatch, or
+# an unreachable service. The reported summary distinguishes successful and
+# failed batches and presents both configured and achieved throughput.
 async def bench_direct_batch(faiss_addr: str, items_per_s: float, duration_s: int, concurrency: int, batch_size: int):
     """
     Send SearchBatch requests directly to FaissDedup.
@@ -154,6 +166,11 @@ async def bench_direct_batch(faiss_addr: str, items_per_s: float, duration_s: in
     attempted_batches = 0
     attempted_items = 0
 
+    # Execute one batch RPC against the FAISS service and record the
+    # resulting client latency together with any per-item FAISS timing
+    # returned by the server. Errors are captured explicitly so that batch
+    # failures contribute to the final overload and stability picture
+    # rather than disappearing from the summary.
     async def one_batch(batch_qids: List[int]) -> None:
         nonlocal attempted_items
         async with sem:
@@ -252,10 +269,14 @@ async def bench_direct_batch(faiss_addr: str, items_per_s: float, duration_s: in
     print("\n=== FAISS benchmark summary ===")
     print(summary)
 
-# Sanity RPC rationale:
-# This 1-item request validates end-to-end wiring (auth metadata, service availability, stub compatibility)
-# before the timed run begins, so subsequent throughput/latency statistics cannot be attributed to a
-# misconfiguration that prevented RPC execution.
+# Benchmark the single-query interface exposed by the aggregator service.
+# Each RPC carries one synthetic embedding, while the aggregator is free to
+# microbatch requests internally before forwarding them to FAISS. As in the
+# direct-batch mode, a short sanity request is issued before the measured
+# run so that the benchmark reflects service behaviour rather than setup
+# failure. The summary includes client-observed RPC latency together with
+# any aggregator wait time and FAISS processing time reported in the
+# response.
 async def bench_aggregator(agg_addr: str, queries_per_s: float, duration_s: int, concurrency: int):
     """
     Send Search requests to FaissAggregator (one embedding per query).
@@ -290,6 +311,10 @@ async def bench_aggregator(agg_addr: str, queries_per_s: float, duration_s: int,
     next_t = time.perf_counter()
     qid = 1
 
+    # Execute one single-query RPC against the aggregator and record the
+    # resulting outcome. The collected sample includes overall client-side
+    # latency and, when available, the service-reported FAISS time and
+    # aggregator waiting time associated with that request.
     async def one_call(my_qid: int) -> None:
         async with sem:
             t1 = time.perf_counter()
@@ -348,7 +373,10 @@ async def bench_aggregator(agg_addr: str, queries_per_s: float, duration_s: int,
     print("\n=== FAISS benchmark summary ===")
     print(summary)
 
-
+# Parse command-line arguments, validate the requested workload settings,
+# and dispatch the benchmark in either aggregator mode or direct-batch
+# mode. This function provides the main reproducible entry point for the
+# experiment.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["aggregator", "direct-batch"], required=True)
@@ -370,6 +398,6 @@ def main():
     else:
         asyncio.run(bench_direct_batch(args.faiss, args.rps, args.duration, args.concurrency, args.batch_size))
 
-
+# Standard command-line entry point.
 if __name__ == "__main__":
     main()
