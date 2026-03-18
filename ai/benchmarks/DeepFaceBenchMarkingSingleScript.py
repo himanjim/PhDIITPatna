@@ -1,3 +1,5 @@
+# This script benchmarks a prototype voter de-duplication workflow that combines DeepFace-based facial embedding generation with FAISS-based nearest-neighbour search and index growth. It is intended for controlled performance testing rather than production deployment. The program measures the time spent in embedding extraction, simulated service-call delay, FAISS search, and index update under different batch sizes used here as a proxy for concurrent voter load. Where a persisted FAISS index is unavailable, a synthetic FlatL2 index is created so that the search path remains executable during experimentation. The reported timings therefore reflect a benchmarking scaffold for academic and engineering evaluation, not a full election-grade pipeline.
+
 # ----------- Imports -----------
 import os
 # Enable TensorFlow GPU memory growth before any TF/DL imports
@@ -57,12 +59,13 @@ except Exception as e:
 
 
 # ----------- Helper Functions -----------
+# Collect a lightweight snapshot of host-side resource consumption after each benchmark run. The function returns instantaneous CPU utilisation and currently used system memory in megabytes so that latency observations can be interpreted alongside coarse infrastructure load. These values are indicative rather than forensic, but they are useful for comparing runs across different batch sizes and execution environments.
 def measure_resources():
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory().used / (1024 * 1024)
     return cpu, mem
 
-
+# Process one benchmark batch from end to end: generate face embeddings for the supplied images, execute a FAISS top-k similarity search, and then append the same embeddings to the index to emulate a growing voter repository. The function records separate timing components for embedding, simulated inter-service delay, FAISS search, and index update, while also counting failed embedding conversions. The inserted sleep intervals are deliberate and model transport or service latency between components in a distributed architecture; they should therefore be read as workload assumptions, not intrinsic model or FAISS cost. Because the index is mutable, updates are protected by a lock to avoid unsafe concurrent writes during testing.
 def process_batch(image_paths):
     stats = {
         "embed_time": 0,
@@ -140,6 +143,7 @@ def process_batch(image_paths):
     return stats
 
 # ----------- Benchmark Function -----------
+# Execute one benchmark scenario for a specified batch size, treated here as the number of concurrent voter requests presented to the pipeline in a single run. The function samples images with replacement, invokes batch processing, measures wall-clock completion time, and summarises both per-request and batch-level timings together with failure count and coarse system resource usage. The resulting record is designed for comparison across load levels rather than for precise micro-benchmarking of individual library calls.
 def benchmark(batch_size):
     print(f"\n🚀 Benchmarking {batch_size} concurrent voters...")
     # Get all image files from the folder
