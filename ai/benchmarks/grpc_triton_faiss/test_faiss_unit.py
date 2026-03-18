@@ -1,13 +1,12 @@
-# -*- coding: utf-8 -*-
-#
-# test_faiss_unit.py  (gRPC edition)
-# ---------------------------------
-# Regression tests for:
-#   - faiss_grpc_server.py (FaissDedup) + admin HTTP endpoints
-#   - faiss_aggregator_grpc.py (FaissAggregator) + admin HTTP endpoints
-#
-# These tests replace the old FastAPI in-process tests for faiss_service.py.
-#
+# This module defines regression and integration-style tests for the FAISS
+# gRPC search service and its optional aggregator front end, together with
+# their administrative HTTP endpoints. The tests support two execution
+# modes: they can connect to already running services supplied through
+# environment variables, or they can launch temporary local subprocesses
+# with a small deterministic index. This dual structure allows the same
+# test logic to serve both lightweight local validation and checks against
+# a live deployment.
+
 import os
 import socket
 import subprocess
@@ -23,14 +22,19 @@ import pytest
 import grpc
 import faiss
 
-# Use existing running services instead of spawning subprocesses (recommended for your setup)
+# Optional external-service configuration. When these values are supplied,
+# the tests run against already available FAISS and aggregator services.
+# When they are absent, the fixture below starts temporary local
+# subprocesses so that the test module remains self-contained.
 FAISS_ADDR = os.getenv("FAISS_ADDR", "").strip()          # e.g. "127.0.0.1:50051"
 AGG_ADDR = os.getenv("AGG_ADDR", "").strip()              # e.g. "127.0.0.1:51052"
 FAISS_ADMIN_URL = os.getenv("FAISS_ADMIN_URL", "").strip()  # e.g. "http://127.0.0.1:9100"
 AGG_ADMIN_URL = os.getenv("AGG_ADMIN_URL", "").strip()      # e.g. "http://127.0.0.1:9200"
 TEST_TOKEN = os.getenv("TEST_TOKEN", "").strip()          # must match INTERNAL_AUTH_TOKEN in running services
 
-
+# Locate and import the generated protobuf stubs from a small set of
+# project-local paths so that the tests can run from a checked-out source
+# tree without requiring manual PYTHONPATH configuration.
 def _import_stubs():
     here = Path(__file__).resolve().parent
     for base in (here, here.parent, Path.cwd()):
@@ -45,7 +49,8 @@ def _import_stubs():
 
 dedup_pb2, dedup_pb2_grpc = _import_stubs()
 
-
+# Obtain an ephemeral local TCP port for temporary subprocess-based test
+# services started by the fixture.
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -53,7 +58,9 @@ def _free_port() -> int:
     s.close()
     return p
 
-
+# Wait until the specified TCP port becomes reachable or raise an error
+# after the timeout. This is used to establish basic readiness for local
+# subprocesses before opening client connections.
 def _wait_port(host: str, port: int, timeout_s: float = 10.0) -> None:
     t0 = time.time()
     while time.time() - t0 < timeout_s:
@@ -64,7 +71,10 @@ def _wait_port(host: str, port: int, timeout_s: float = 10.0) -> None:
             time.sleep(0.05)
     raise RuntimeError(f"port not ready: {host}:{port}")
 
-
+# Perform a simple authenticated or unauthenticated HTTP GET against an
+# administrative endpoint and return both the status code and the decoded
+# JSON body. This helper is used for policy and health checks on the
+# auxiliary HTTP interfaces.
 def _http_get_json(url: str, token: str = "") -> Tuple[int, dict]:
     req = urllib.request.Request(url)
     if token:
@@ -76,7 +86,10 @@ def _http_get_json(url: str, token: str = "") -> Tuple[int, dict]:
         body = e.read().decode("utf-8")
         return e.code, json.loads(body)
 
-
+# Build a small deterministic FAISS index on disk for subprocess-based
+# tests. The chosen vectors make nearest-neighbour outcomes predictable,
+# which allows the unit tests to assert specific identifiers and match
+# decisions without relying on a large or pre-existing index.
 def _build_tiny_index(path: Path, dim: int) -> None:
     idx = faiss.IndexIDMap2(faiss.IndexFlatL2(dim))
     vecs = np.array(
@@ -91,10 +104,16 @@ def _build_tiny_index(path: Path, dim: int) -> None:
     idx.add_with_ids(vecs, ids)
     faiss.write_index(idx, str(path))
 
-
+# Provide the test stack configuration used by the module. In external
+# mode, the fixture validates the required environment variables and yields
+# connection details for already running services. In self-contained mode,
+# it creates a temporary deterministic index, launches local FAISS and
+# aggregator subprocesses, waits for their data and administrative ports to
+# become reachable, and then tears them down after the tests complete.
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory):
-        # --- External mode: test already-running services ---
+        # External-service mode: validate the required connection details
+        # and reuse the already running FAISS and aggregator processes.
     if FAISS_ADDR and AGG_ADDR:
         if not TEST_TOKEN:
             pytest.fail("TEST_TOKEN is not set. Set TEST_TOKEN to match INTERNAL_AUTH_TOKEN of running services.")
@@ -102,7 +121,8 @@ def stack(tmp_path_factory):
         if not FAISS_ADMIN_URL:
             pytest.fail("FAISS_ADMIN_URL is not set. Set FAISS_ADMIN_URL (e.g. http://127.0.0.1:9100).")
 
-        # Aggregator admin is optional in your current run; fail with a clear message if missing.
+        # The aggregator administrative endpoint is required by the tests
+        # that validate health and policy behaviour.
         if not AGG_ADMIN_URL:
             pytest.fail("AGG_ADMIN_URL is not set. Start aggregator with ADMIN_HTTP_LISTEN and set AGG_ADMIN_URL.")
 
@@ -195,14 +215,18 @@ def stack(tmp_path_factory):
         except subprocess.TimeoutExpired:
             p.kill()
 
-
+# Convert a numeric vector into the raw float32 byte representation
+# expected by the gRPC request messages.
 def _emb_bytes(dim: int, xs) -> bytes:
     v = np.asarray(xs, dtype=np.float32).reshape(1, dim)
     return v.tobytes()
 
-
+# Verify that the administrative health endpoints of both the FAISS server
+# and the aggregator are reachable and report an operational status. This
+# test checks only basic liveness of the HTTP side channels, not detailed
+# service correctness.
 def test_admin_health(stack):
-    # FAISS admin must be reachable
+    # Aggregator admin must be reachable (otherwise fail with an actionable message)
     code, j = _http_get_json(stack["faiss_admin"] + "/v1/health")
     assert code == 200 and j.get("status") == "ok"
 
@@ -217,7 +241,9 @@ def test_admin_health(stack):
         )
     assert code == 200 and j.get("status") == "ok"
 
-
+# Verify that the policy endpoint is protected by fail-closed
+# authentication and that an authorised request returns both a policy
+# object and a stable policy hash suitable for configuration inspection.
 def test_admin_policy_fail_closed(stack):
     code, _ = _http_get_json(stack["faiss_admin"] + "/v1/policy")  # no token
     assert code == 403
@@ -227,7 +253,8 @@ def test_admin_policy_fail_closed(stack):
     assert "policy" in j and "policy_hash_sha256" in j
     assert len(j["policy_hash_sha256"]) == 64
 
-
+# Verify that the gRPC search interface rejects unauthenticated requests
+# with PERMISSION_DENIED rather than processing them implicitly.
 @pytest.mark.asyncio
 async def test_grpc_auth_fail_closed(stack):
     ch = grpc.aio.insecure_channel(stack["faiss"])
@@ -240,7 +267,11 @@ async def test_grpc_auth_fail_closed(stack):
     assert e.value.code() == grpc.StatusCode.PERMISSION_DENIED
     await ch.close()
 
-
+# Verify direct FAISS search behaviour through the gRPC interface. In
+# subprocess mode, the test uses the deterministic tiny index and can
+# therefore assert exact identifiers and threshold outcomes. In external
+# mode, where the index contents may be large and deployment-specific, the
+# test falls back to response-shape and basic validity checks.
 @pytest.mark.asyncio
 async def test_search_direct_faiss(stack):
     md = (("x-internal-auth", stack["token"]),)
@@ -273,7 +304,9 @@ async def test_search_direct_faiss(stack):
         assert r2.is_match is False
         await ch.close()
 
-
+# Verify that the aggregator accepts a single-query search request,
+# forwards it successfully to the FAISS tier, and returns a structurally
+# valid response including batching and wait-time metadata.
 @pytest.mark.asyncio
 async def test_search_via_aggregator(stack):
     md = (("x-internal-auth", stack["token"]),)
