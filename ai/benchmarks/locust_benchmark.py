@@ -8,6 +8,17 @@ Locust benchmark for Triton + FAISS
   4. End-to-end workflow              ->   name='end_to_end'   request_type='login'
 * Uses Locust's unified events.request API (>=2.15).
 * Logs one CSV row per task, even if there are failures/partials.
+
+# This script benchmarks an end-to-end biometric matching workflow built
+# around Triton-based embedding inference and a FAISS-backed similarity
+# service. Each Locust task represents one simulated voter transaction:
+# an image is selected, transformed into an embedding by Triton, submitted
+# to the FAISS service for nearest-neighbour search and optional index
+# update, and then recorded as both component-level and end-to-end timing
+# events. The implementation is designed for performance measurement and
+# failure analysis under load, not for production election use. In
+# addition to Locust's event stream, the script writes one CSV row per
+# iteration so that partial failures remain visible during later analysis.
 """
 
 from locust import HttpUser, task, between
@@ -37,6 +48,13 @@ if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # ───────────── Helper: preload all images ───────────── #
+# Preload and lightly preprocess all benchmark images before the load test
+# begins. Each image is read from disk, converted to floating-point form,
+# resized to the model's expected spatial resolution, and rearranged into
+# channel-first format for Triton inference. Performing this work once at
+# startup avoids repeated disk I/O inside user tasks and ensures that the
+# measured latency primarily reflects the inference-and-search pipeline
+# rather than file-system variability.
 def load_images(folder: str):
     imgs = []
     for fname in sorted(os.listdir(folder)):
@@ -60,6 +78,12 @@ if not IMGS:
     raise RuntimeError(f"No images found in {IMAGE_FOLDER}")
 
 # ───────────── Locust user ───────────── #
+# Define the synthetic Locust user that drives the benchmark workload.
+# Each user repeatedly executes one biometric verification transaction and
+# records the Triton, FAISS-search, FAISS-update, and end-to-end timings
+# as separate Locust request events. This separation is intentional: it
+# allows the benchmarking report to distinguish model-serving latency from
+# vector-search latency and from the overall user-observed workflow time.
 class Voter(HttpUser):
     """
     Simulates a voter sending one face per task.
@@ -69,6 +93,12 @@ class Voter(HttpUser):
     wait_time = between(0.01, 0.05)
 
     # Unified request recorder (Locust ≥ 2.15)
+    # Emit one normalised Locust request event for a benchmark sub-step.
+    # The method provides a single recording path for both successful and
+    # failed operations so that Triton inference, FAISS search, FAISS
+    # update, and end-to-end timing can all appear as separate measurable
+    # entities in Locust's statistics. Centralising this logic also keeps
+    # event semantics consistent across the task implementation.
     def _record(self, request_type, name, response_time_ms, response_length=0, exception=None, response=None):
         self.environment.events.request.fire(
             request_type=request_type,
@@ -79,7 +109,15 @@ class Voter(HttpUser):
             context={"user": self},
             response=response
         )
-
+      
+    # Execute one complete benchmark iteration representing a single voter
+    # interaction. The task selects a preloaded face image, sends it to
+    # Triton for embedding extraction, forwards the embedding to the FAISS
+    # service, records component timings as distinct Locust events, and
+    # always writes a CSV row even when part of the workflow fails. This
+    # design is deliberate: in load-testing studies, incomplete or failed
+    # transactions are analytically important and should not disappear from
+    # the experimental record.
     @task
     def login(self):
         # Timers & per-iteration metrics (None -> will print as 0.0 in CSV)
