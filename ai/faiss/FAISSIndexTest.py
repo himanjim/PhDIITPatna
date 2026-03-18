@@ -1,4 +1,9 @@
-# FAISS IndexFlatL2 with Memory-Mapped Storage for Exact Matching + Timing
+# This script is a standalone experimental harness for building and timing
+# an exact `IndexFlatL2` FAISS index backed by memory-mapped storage. It
+# generates a large synthetic embedding set, writes the index to disk,
+# reloads it through FAISS memory mapping, and then measures cold and warm
+# search behaviour. The script is intended for one-off systems
+# experimentation rather than for production service deployment.
 
 import numpy as np
 import faiss
@@ -12,10 +17,14 @@ INDEX_FILE = "voter_index_flatl2.faiss"
 NUM_BENCHMARK_QUERIES = 10
 
 # ---------- Step 1: Generate synthetic embeddings ----------
+# Generate the synthetic embedding matrix used both to populate the index
+# and to supply query vectors for the timing checks.
 print("[INFO] Generating synthetic voter embeddings...")
 embeddings = np.random.rand(NUM_VOTERS, EMBEDDING_DIM).astype('float32')
 
 # ---------- Step 2: Create and populate IndexFlatL2 ----------
+# Build and populate an exact FlatL2 index in memory before writing it to
+# disk.
 print("[INFO] Creating IndexFlatL2 and adding vectors...")
 index = faiss.IndexFlatL2(EMBEDDING_DIM)
 index.add(embeddings)
@@ -25,10 +34,15 @@ print(f"[INFO] Saving index to disk as {INDEX_FILE}...")
 faiss.write_index(index, INDEX_FILE)
 
 # ---------- Step 4: Load index via mmap ----------
+# Reload the saved index through FAISS memory-mapped I/O so that the test
+# exercises the disk-backed access path rather than only the original
+# in-memory object.
 print(f"[INFO] Loading index from disk with memory-mapped I/O...")
 mmap_index = faiss.read_index(INDEX_FILE, faiss.IO_FLAG_MMAP)
 
 # ---------- Step 4.5: Warm up index by reconstructing entries ----------
+# Touch representative entries to warm the mapped index before the later
+# warm-search measurements.
 print("[INFO] Warming up index to preload into memory...")
 for i in range(0, mmap_index.ntotal, 100_000):
     _ = mmap_index.reconstruct(i)
@@ -66,12 +80,3 @@ print(f"Max Search Time: {max_time:.4f} ms")
 
 # ---------- Optional: Delete index file ----------
 # os.remove(INDEX_FILE)
-
-
-# Cold-start Search Time: 1086.0795 ms
-#
-# [INFO] Benchmarking 10 warm searches...
-# ✅ Warm search benchmark completed:
-# Average Search Time: 1087.3747 ms
-# Min Search Time: 1083.6219 ms
-# Max Search Time: 1089.9090 ms
