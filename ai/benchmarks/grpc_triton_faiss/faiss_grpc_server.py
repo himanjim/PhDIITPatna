@@ -1,94 +1,18 @@
 #!/usr/bin/env python3
 """
-faiss_grpc_server.py (v3.2)
-===========================
+This module implements a gRPC-based FAISS similarity service for internal
+de-duplication and benchmarking workloads. It exposes single-query search,
+batch search, and append-only batch ingest operations over embeddings
+transmitted as raw float32 bytes. The service is designed to support
+high-throughput nearest-neighbour retrieval while keeping the wire format
+compact and avoiding JSON-related transport overhead.
 
-What this service is
---------------------
-A gRPC FAISS similarity microservice that supports:
-
-  1) Search()       : single-vector nearest-neighbour lookup (k=1)
-  2) SearchBatch()  : batched nearest-neighbour lookup (k=1)  [hot path for throughput]
-  3) IngestBatch()  : append-only index updates, buffered + flushed asynchronously
-
-This v3.2 update adds *optional primary→follower replication* for IngestBatch so that
-multiple FAISS replicas can behave like one logical "master index" (e.g., "already-voted"
-set) while still scaling read/search throughput.
-
-Key correctness/scalability idea
---------------------------------
-- There is ONE logical index (the global set of embeddings to compare against).
-- We run multiple PHYSICAL replicas of that index for capacity and availability.
-- To keep replicas consistent, every accepted IngestBatch update must be replicated
-  to followers (either by the upstream coordinator, or by the PRIMARY fan-out in this file).
-
-This file implements the *minimum* server-side support for that: PRIMARY fan-out.
-
-Compatibility note (important)
-------------------------------
-To use IngestBatch, your protobuf service definition must include the IngestBatch RPC and
-message types. If your current dedup.proto only has Search/SearchBatch, add IngestBatch and
-re-run gen_proto.sh to regenerate stubs.
-
-Design principles (reviewer-friendly)
--------------------------------------
-- Embeddings are transported as raw float32 bytes (512-D → 2048 bytes) to avoid JSON/base64 overhead.
-- GPU FAISS operations are serialized with an asyncio.Lock to avoid FAISS GPU allocator asserts.
-- Ingest is decoupled from Search via an in-memory queue and periodic flush (so updates do not
-  dominate search tail latency).
-- Internal auth is fail-closed using gRPC metadata header: x-internal-auth
-
-Environment variables (core)
-----------------------------
-INTERNAL_AUTH_TOKEN   (required) shared secret; client must send metadata x-internal-auth
-EMB_DIM               default 512
-TAU_L2                default 1.150 (L2 threshold; compare squared distance to TAU_L2^2)
-
-USE_GPU               1/0 (default 1)
-GPU_ID                default 0
-INDEX_TYPE            flat|hnsw (default flat). GPU supported only for flat.
-
-BOOTSTRAP_MODE        empty|random (default empty)
-RANDOM_N              number of synthetic vectors (default 1_000_000 when random)
-RANDOM_CHUNK          chunk size for bootstrap (default 100000)
-ALLOW_EMPTY_INDEX     1/0 (default 1)
-
-FAISS_OMP_THREADS     (CPU only) OpenMP threads
-FAISS_EXECUTOR_WORKERS threadpool size for FAISS native calls (CPU default 64, GPU default 1)
-FAISS_GPU_TEMP_BYTES  optional temp memory for StandardGpuResources (bytes)
-
-Updates (append-only)
----------------------
-ENABLE_UPDATES         1/0 (default 1)
-UPDATE_BATCH_SIZE      default 4096
-UPDATE_BATCH_MS        default 100
-UPDATE_MAX_QUEUE       default 200000
-
-Replica-consistency (PRIMARY fan-out for IngestBatch)
------------------------------------------------------
-IS_PRIMARY=1|0            default 0
-REPLICA_FANOUT            comma-separated follower addrs, e.g. "10.0.0.2:50051,10.0.0.3:50051"
-SYNC_REPLICATION=1|0      default 0 (async by default)
-STRICT_REPLICATION=1|0    default 0 (only applies when SYNC_REPLICATION=1)
-REPLICA_TIMEOUT_S         default 2.0
-
-Operational guidance
---------------------
-- For a real election system, treat FAISS replicas as read replicas and either:
-    (A) upstream coordinator broadcasts IngestBatch to all replicas, or
-    (B) send ingest to PRIMARY only and let PRIMARY fan-out to followers (this file).
-- If STRICT_REPLICATION=1, a partial fan-out fails the ingest (caller must retry or remove
-  lagging replicas from the read pool).
-
-Run
----
-ulimit -n 200000
-export INTERNAL_AUTH_TOKEN=devtoken
-export USE_GPU=1
-export BOOTSTRAP_MODE=random
-export RANDOM_N=1000000
-
-python faiss_grpc_server.py --listen 0.0.0.0:50051
+Operationally, the implementation separates the latency-critical search
+path from buffered index updates, supports both CPU and GPU FAISS
+backends, and can optionally replicate accepted ingest operations from a
+primary node to follower replicas. The code therefore serves two roles at
+once: it is a functional search service and a systems component whose
+timing and queueing behaviour can be studied under benchmark load.
 """
 
 from __future__ import annotations
@@ -116,9 +40,10 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-# -----------------------------------------------------------------------------
-# Make ./gen importable (avoids requiring users to export PYTHONPATH explicitly)
-# -----------------------------------------------------------------------------
+# Locate the generated protobuf stubs from project-local paths so that the
+# service can run from a checked-out source tree without requiring manual
+# PYTHONPATH configuration. This improves reproducibility across local and
+# experimental deployments.
 ROOT = Path(__file__).resolve().parent
 GEN = ROOT / "gen"
 if GEN.exists():
@@ -193,13 +118,14 @@ ADMIN_HTTP_LISTEN = os.getenv("ADMIN_HTTP_LISTEN", "").strip()  # e.g. "127.0.0.
 METRICS_WINDOW = int(os.getenv("METRICS_WINDOW", "2048"))
 
 
-# -----------------------------------------------------------------------------
-# gRPC options
-# -----------------------------------------------------------------------------
+# Return the gRPC transport options used by the service. These settings
+# bound message sizes and apply conservative keepalive behaviour so that
+# long-running internal workloads remain stable without excessive control-
+# plane traffic.
 def _grpc_options():
     """
-    Conservative keepalive to avoid GOAWAY ENHANCE_YOUR_CALM for too many pings.
-    For high-throughput workloads, there is constant data flow and keepalive is rarely needed.
+    Return gRPC transport options with conservative keepalive behaviour and
+    message-size limits suitable for high-throughput internal workloads.
     """
     return [
         ("grpc.max_receive_message_length", GRPC_MAX_MB * 1024 * 1024),
@@ -214,7 +140,10 @@ def _grpc_options():
     ]
     
 # ------------------------- Policy snapshot + metrics -------------------------
-
+# Serialize a dictionary into a deterministic JSON byte sequence so that
+# hashes remain stable across runs and across non-semantic variations in
+# key order or whitespace. This is used for policy reporting rather than
+# for the search path itself.
 def _canon_json_bytes(obj: dict) -> bytes:
     """
     Deterministic JSON for stable hashing.
@@ -222,13 +151,17 @@ def _canon_json_bytes(obj: dict) -> bytes:
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
-
+# Compute a SHA-256 digest for the supplied byte sequence and return the
+# hexadecimal form used by the administrative policy endpoint.
 def _sha256_hex(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
-
+# Maintain a bounded rolling window of recent latency observations and
+# provide compact percentile summaries for the administrative metrics
+# interface. The class is intentionally lightweight and is not intended to
+# replace a full telemetry system.
 class _LatencyStats:
-    """Tiny fixed-window latency stats (enough for /v1/metrics)."""
+    """Fixed-window latency summary used for lightweight administrative metrics."""
     def __init__(self, window: int):
         self._q = deque(maxlen=window)
 
@@ -248,12 +181,16 @@ class _LatencyStats:
             "max_ms": xs[-1],
         }
 
-
+# Build the policy snapshot exposed by the administrative API. The object
+# describes the active service configuration in a form suitable for review
+# and reproducibility checks, while deliberately excluding secrets and
+# authentication material.
 def _policy_obj_faiss(mgr: FaissManager) -> dict:
-# Never include secrets in the policy object.
+    # The policy object is intended for external inspection and therefore
+    # must not contain secrets or authentication material.
     return {
         "service": "faiss_grpc_server",
-        "version": "v3.1",
+        "version": "v3.2",
         "emb_dim": EMB_DIM,
         "metric": "L2",
         "tau_l2": TAU_L2,
@@ -280,9 +217,15 @@ _ADMIN_STATE = {
     "started_ts": time.time(),
 }
 
+# Expose lightweight administrative HTTP endpoints for health, policy, and
+# recent service metrics. These endpoints are operational aids and are
+# intentionally kept separate from the gRPC search and ingest interface.
 class _AdminHandler(BaseHTTPRequestHandler):
     server_version = "faiss-admin/1.0"
 
+    # Return a compact JSON response with the supplied HTTP status code.
+    # This helper keeps the administrative interface simple and machine-
+    # readable.
     def _send_json(self, code: int, obj: dict) -> None:
         b = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -291,11 +234,18 @@ class _AdminHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    # Validate the internal administrative token for endpoints that expose
+    # policy or metrics information. Health-style checks remain separately
+    # controlled by the request path.
     def _auth_ok(self) -> bool:
         # Match old service semantics: X-Internal-Auth header, fail-closed.
         tok = self.headers.get("X-Internal-Auth", "")
         return tok == INTERNAL_AUTH_TOKEN
 
+    # Serve the supported administrative GET endpoints. Depending on the
+    # path and authentication state, the method returns health information,
+    # a policy snapshot, or recent service metrics derived from in-process
+    # state.
     def do_GET(self):  # noqa: N802
         if self.path in ("/v1/health", "/ping"):
             mgr = _ADMIN_STATE["mgr"]
@@ -329,25 +279,31 @@ class _AdminHandler(BaseHTTPRequestHandler):
 
         return self._send_json(404, {"detail": "not_found"})
 
-
+# Start the auxiliary administrative HTTP server in a daemon thread so
+# that operational inspection can run alongside the asyncio-based gRPC
+# service without interfering with its event loop.
 def _start_admin_http(listen: str) -> None:
-    # Runs in a daemon thread; intended for localhost or private-network use only.
+    # Start the administrative HTTP server in a daemon thread. This
+    # interface is intended only for localhost or other controlled
+    # internal-network deployment.
     host, port_s = listen.rsplit(":", 1)
     httpd = ThreadingHTTPServer((host, int(port_s)), _AdminHandler)
     t = threading.Thread(target=httpd.serve_forever, name="faiss-admin-http", daemon=True)
     t.start()
 
 
-# -----------------------------------------------------------------------------
-# Auth interceptor
-# -----------------------------------------------------------------------------
+# Enforce a fail-closed internal authentication boundary for all gRPC
+# methods. Requests must present the expected shared token in metadata or
+# they are rejected before reaching the service implementation.
 class InternalAuthInterceptor(grpc.aio.ServerInterceptor):
     """Fail-closed internal auth via metadata x-internal-auth."""
 
     def __init__(self, expected_token: str):
         self.expected = expected_token
-                # Rolling stats for the admin /v1/metrics endpoint (transport-agnostic).
 
+    # Intercept each incoming RPC and validate its internal-auth metadata.
+    # On failure, return an aborting handler so that unauthorised traffic
+    # is rejected consistently and early in the serving path.
     async def intercept_service(self, continuation, handler_call_details):
         md = dict(handler_call_details.invocation_metadata or [])
         tok = md.get("x-internal-auth", "")
@@ -362,6 +318,9 @@ class InternalAuthInterceptor(grpc.aio.ServerInterceptor):
 # -----------------------------------------------------------------------------
 # Index build helpers
 # -----------------------------------------------------------------------------
+# Construct the configured CPU FAISS index. CPU-backed indices are wrapped
+# in IndexIDMap2 so that application-level identifiers can be stored and
+# retrieved directly alongside vector positions.
 def _make_cpu_index() -> faiss.Index:
     """
     CPU indices are wrapped in IndexIDMap2 so we can store application-level ids directly.
@@ -374,6 +333,10 @@ def _make_cpu_index() -> faiss.Index:
 
     return faiss.IndexIDMap2(faiss.IndexFlatL2(EMB_DIM))
 
+# Attempt to construct a GPU-backed FlatL2 FAISS index using FP16 storage.
+# GPU mode is enabled only for flat indices here, and identifier mapping is
+# maintained separately because direct GPU-side ID mapping can be less
+# stable under concurrent service workloads.
 
 def _make_gpu_index_flat_fp16() -> Optional[faiss.Index]:
     """
@@ -408,7 +371,10 @@ def _make_gpu_index_flat_fp16() -> Optional[faiss.Index]:
     except Exception:
         return None
 
-
+# Generate synthetic vectors and aligned integer identifiers for optional
+# index bootstrapping. This path is intended to emulate index size and
+# search load for systems benchmarking; it does not represent real face
+# embeddings or biometric decision behaviour.
 def _bootstrap_random_vectors(n: int, start_id: int) -> Tuple[np.ndarray, np.ndarray]:
     """
     Synthetic vectors used to emulate index size for benchmarking.
@@ -423,17 +389,24 @@ def _bootstrap_random_vectors(n: int, start_id: int) -> Tuple[np.ndarray, np.nda
 # -----------------------------------------------------------------------------
 # Manager: index + optional id-store mapping for GPU-flat
 # -----------------------------------------------------------------------------
+# Hold the active FAISS index together with the metadata required to
+# interpret its contents, including whether the index is GPU-backed and,
+# when needed, the parallel identifier store aligned to vector positions.
 @dataclass
 class FaissManager:
     index_srv: faiss.Index
     use_gpu: bool
     # For GPU-flat, ids[pos] gives application-level id for vector at position pos.
     ids: Optional[np.ndarray]
-
+    # Return the current number of indexed vectors as an integer suitable
+    # for operational reporting and service checks.
     def ntotal(self) -> int:
         return int(self.index_srv.ntotal)
 
-
+# Build and initialise the FAISS manager according to the configured
+# environment. Depending on settings, this may load an existing CPU index,
+# construct a new CPU or GPU index, and optionally bootstrap the index
+# with synthetic vectors to emulate large-scale operation.
 def build_manager() -> FaissManager:
     ids: Optional[np.ndarray] = None
 
@@ -482,7 +455,10 @@ def build_manager() -> FaissManager:
 # -----------------------------------------------------------------------------
 _EXPECT_BYTES = EMB_DIM * 4
 
-
+# Decode a batch of raw embedding byte strings into a float32 matrix of
+# shape [N, EMB_DIM]. The function validates payload lengths first and then
+# performs a single concatenation so that decoding remains efficient for
+# batch RPCs.
 def _bytes_list_to_mat(bs: List[bytes]) -> np.ndarray:
     """
     Efficient batch decode:
@@ -497,7 +473,8 @@ def _bytes_list_to_mat(bs: List[bytes]) -> np.ndarray:
     blob = b"".join(bs)
     return np.frombuffer(blob, dtype=np.float32).reshape(len(bs), EMB_DIM)
 
-
+# Decode one raw embedding payload into a float32 matrix with a leading
+# batch dimension of size one, after validating the expected byte length.
 def _bytes_to_single(b: bytes) -> np.ndarray:
     if len(b) != _EXPECT_BYTES:
         raise ValueError(f"embedding_f32 must be {_EXPECT_BYTES} bytes, got {len(b)}")
@@ -507,6 +484,9 @@ def _bytes_to_single(b: bytes) -> np.ndarray:
 # -----------------------------------------------------------------------------
 # Update queue entries
 # -----------------------------------------------------------------------------
+# Represent one pending append-only index update in the in-memory ingest
+# queue, consisting of the decoded vector and its application-level
+# identifier.
 @dataclass
 class _Upd:
     vec: np.ndarray
@@ -516,16 +496,16 @@ class _Upd:
 # -----------------------------------------------------------------------------
 # Service implementation
 # -----------------------------------------------------------------------------
+# Implement the gRPC search and ingest interface exposed by the FAISS
+# service. The class keeps the search path fast and predictable while
+# buffering update traffic and, when configured as a primary node,
+# optionally replicating accepted ingest operations to follower replicas.
 class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
-    """
-    Search/SearchBatch are the latency-critical APIs used in benchmarks.
-    IngestBatch is buffered and flushed periodically to avoid inflating search tail latency.
-
-    GPU safety:
-      - FAISS GPU indices are not safe under concurrent search/add calls.
-      - We serialize all GPU index operations using an asyncio.Lock.
-    """
-
+  
+    # Initialise the service state, including the FAISS execution pool,
+    # optional GPU-operation lock, buffered update queue, optional replica
+    # fan-out stubs, and rolling latency summaries exposed through the
+    # administrative metrics endpoint.
     def __init__(self, mgr: FaissManager):
         self.mgr = mgr
         self._exec = ThreadPoolExecutor(max_workers=FAISS_EXECUTOR_WORKERS)
@@ -548,6 +528,9 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
                 self._replica_channels.append(ch)
                 self._replica_stubs.append(dedup_pb2_grpc.FaissDedupStub(ch))
 
+    # Execute an asynchronous FAISS operation under the GPU lock when the
+    # active index is GPU-backed. This prevents overlapping search and add
+    # calls from entering the GPU index concurrently.
     async def _with_lock(self, coro):
         """Execute coro under the GPU lock if needed."""
         if self._index_lock is None:
@@ -555,6 +538,10 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
         async with self._index_lock:
             return await coro()
 
+    # Execute a FAISS search in the thread pool and return distances,
+    # indices, and the wall-clock time observed by the service. The timing
+    # includes executor dispatch as well as FAISS runtime and is therefore
+    # suitable for service-level latency reporting.
     async def _search(self, vecs: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray, float]:
         """
         Runs FAISS search in a threadpool and returns (D, I, wall_ms).
@@ -571,6 +558,10 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
         self.lat_search_rpc.add_ms(dt_ms)
         return D, I, dt_ms
 
+    # Append vectors to the active FAISS index and maintain identifier
+    # alignment where necessary. CPU-backed indices store application-level
+    # identifiers directly, whereas the GPU flat index updates a separate
+    # parallel identifier array after a successful add.
     async def _add(self, vecs: np.ndarray, ids: np.ndarray) -> None:
         """
         Append vectors to index and maintain id-store (GPU) if enabled.
@@ -595,6 +586,10 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
             else:
                 self.mgr.ids = np.concatenate([self.mgr.ids, ids])
 
+    # Periodically drain the buffered ingest queue and apply queued updates
+    # to the index in batches. This separates the append-only update path
+    # from the latency-critical search path so that frequent small ingests
+    # do not dominate search tail latency.
     async def _flush_updates_loop(self) -> None:
         """
         Background update flusher:
@@ -625,10 +620,16 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
             try:
                 await self._add(mat, ids)
             except Exception:
-                # For benchmark harnesses, swallow errors to keep service alive.
-                # Production systems should log + alert + trip a circuit breaker.
+                # Suppress flush failures so that the benchmark service
+                # remains available, while acknowledging that a production
+                # system should log, alert, and apply stronger failure
+                # handling at this point.
                 pass
 
+    # Replicate an accepted ingest payload from the primary node to any
+    # configured follower replicas. The method supports both asynchronous
+    # and synchronous fan-out modes and reports how many followers accepted
+    # the forwarded update.
     async def _fanout_ingest_to_followers(self, accepted_ids: List[int], accepted_embs: List[bytes]) -> Tuple[int, int, str]:
         """
         Replicate an accepted IngestBatch payload to follower replicas.
@@ -671,6 +672,10 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
     # -------------------------------------------------------------------------
     # RPCs
     # -------------------------------------------------------------------------
+    # Handle a single-query nearest-neighbour search. The method validates
+    # the embedding payload, executes a k=1 FAISS lookup, maps internal
+    # positions to application identifiers when required, and returns both
+    # distance values and service-level timing metadata.
     async def Search(self, request, context):
         if self.mgr.ntotal() == 0:
             if not ALLOW_EMPTY_INDEX:
@@ -730,6 +735,10 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
             note="ok",
         )
 
+    # Handle a batch nearest-neighbour search. The method validates request
+    # shape, decodes all embeddings into one matrix, performs a single FAISS
+    # batch lookup, and returns one SearchResponse per submitted query
+    # together with the shared batch timing metadata.
     async def SearchBatch(self, request, context):
         if len(request.query_ids) != len(request.embeddings_f32):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "query_ids and embeddings_f32 length mismatch")
@@ -810,6 +819,11 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
 
         return dedup_pb2.SearchBatchResponse(results=results, faiss_batch_ms=batch_ms, batch_size=n)
 
+    # Handle append-only batch ingestion of new vectors. The method
+    # validates the payload, decodes embeddings once, enqueues accepted
+    # updates for later flushing, and optionally replicates the accepted
+    # portion of the batch to follower replicas when this node acts as the
+    # configured primary.
     async def IngestBatch(self, request, context):
         """
         Append-only ingestion path (not part of the hot search benchmark).
@@ -883,6 +897,10 @@ class FaissDedupServicer(dedup_pb2_grpc.FaissDedupServicer):
 # -----------------------------------------------------------------------------
 # Server bootstrap
 # -----------------------------------------------------------------------------
+# Build the FAISS manager, create the gRPC server, register the service
+# implementation, and optionally start the buffered update loop and the
+# auxiliary administrative HTTP interface. This function is the operational
+# entry point for running the service process.
 async def serve(listen: str):
     mgr = build_manager()
 
@@ -915,13 +933,14 @@ async def serve(listen: str):
 
     await server.wait_for_termination()
 
-
+# Parse command-line arguments and launch the asynchronous FAISS gRPC
+# service on the configured listening address.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen", default="0.0.0.0:50051")
     args = ap.parse_args()
     asyncio.run(serve(args.listen))
 
-
+# Standard command-line entry point.
 if __name__ == "__main__":
     main()
