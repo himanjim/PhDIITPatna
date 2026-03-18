@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-bench_liveness_grpc.py
+This script drives a high-concurrency gRPC benchmark for the liveness
+service, either through an aggregator endpoint or by connecting directly
+to a replica. It generates a configurable workload of clip identifiers
+and prompts, issues requests concurrently, records one row per completed
+RPC, and writes both detailed run-level output and a compact summary with
+latency percentiles, throughput, and error rate.
 
-High-concurrency gRPC benchmark driver for liveness (via aggregator or direct replica).
-
-Outputs:
-- <out_prefix>_runs.csv    : one row per request
-- <out_prefix>_summary.csv : one-row summary with p50/p95/p99 + throughput + error_rate
-
-Semantics:
-- rpc_wall_ms       : client-observed RPC duration (includes queuing/transport)
-- server_compute_ms : replica compute-only time around liveness call
+The benchmark distinguishes client-observed RPC duration from server-
+reported compute time. The former includes transport and queueing effects
+visible to the caller, whereas the latter is intended to reflect only the
+replica-side liveness computation reported by the service.
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ import grpc
 import liveness_pb2
 import liveness_pb2_grpc
 
-
+# Compute a simple empirical quantile from a list of observed values for
+# use in latency summary reporting.
 def _pctl(values: List[float], q: float) -> float:
     if not values:
         return 0.0
@@ -48,13 +49,16 @@ def _mean(values: List[float]) -> float:
 def _std(values: List[float]) -> float:
     return float(statistics.pstdev(values)) if len(values) > 1 else 0.0
 
-
+# Represent one workload item as a clip identifier and the associated
+# prompt string to be sent to the liveness service.
 @dataclass(frozen=True)
 class Job:
     clip_id: str
     prompt: str
 
-
+# Define the weighted workload presets used during benchmarking so that
+# different clip types and prompt conditions can be mixed in controlled
+# proportions.
 def _workload_jobs(preset: str) -> List[Tuple[Job, float]]:
     preset = (preset or "").strip().lower()
     if preset == "idle_mix":
@@ -94,7 +98,9 @@ def _ensure_parent(path: str) -> None:
     if p.parent and not p.parent.exists():
         p.parent.mkdir(parents=True, exist_ok=True)
 
-
+# Issue an untimed warmup sequence before measurement begins in order to
+# reduce the effect of one-time initialisation costs on the reported
+# benchmark statistics.
 async def _warmup(stub, auth_token: str, jobs, n: int, seed: int, max_frames: int, timeout_s: float):
     rng = random.Random(seed)
     for i in range(n):
@@ -107,7 +113,11 @@ async def _warmup(stub, auth_token: str, jobs, n: int, seed: int, max_frames: in
         )
         await stub.CheckByClipId(req, metadata=_md(auth_token), timeout=timeout_s)
 
-
+# Execute the request loop for one logical benchmark worker. Each worker
+# samples workload items from the configured mixture, submits them through
+# the shared gRPC stub, and records one result row per request, including
+# both client-observed wall-clock latency and any server-reported compute
+# time.
 async def _worker(wid: int, stub, auth_token: str, jobs, n: int, seed: int, max_frames: int, timeout_s: float) -> List[Dict]:
     rng = random.Random(seed + wid * 10007)
     rows: List[Dict] = []
@@ -154,7 +164,8 @@ async def _worker(wid: int, stub, auth_token: str, jobs, n: int, seed: int, max_
 
     return rows
 
-
+# Aggregate per-request rows into a compact latency and error summary for
+# benchmark reporting.
 def _summarise(rows: List[Dict]) -> Dict[str, float]:
     wall = [float(r["rpc_wall_ms"]) for r in rows]
     comp = [float(r["server_compute_ms"]) for r in rows]
@@ -177,7 +188,10 @@ def _summarise(rows: List[Dict]) -> Dict[str, float]:
         "server_compute_max": max(comp) if comp else 0.0,
     }
 
-
+# Run the full benchmark workflow: parse configuration, validate target
+# reachability, perform optional warmup, distribute the planned request
+# count across concurrent workers, collect all result rows, and write the
+# detailed and summary CSV outputs.
 async def _main_async():
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", required=True)
@@ -212,7 +226,8 @@ async def _main_async():
 
     conc = max(1, int(args.concurrency))
 
-    # exact distribution of n requests
+    # Distribute the planned total request count across workers as evenly
+    # as possible so that the realised workload matches the requested N.
     per = int(args.n) // conc
     rem = int(args.n) % conc
     per_worker = [per + (1 if i < rem else 0) for i in range(conc)]
@@ -269,7 +284,8 @@ async def _main_async():
     print(f"RPC wall ms: mean={summ['rpc_wall_mean']:.2f}  p50={summ['rpc_wall_p50']:.2f}  p95={summ['rpc_wall_p95']:.2f}  p99={summ['rpc_wall_p99']:.2f}  max={summ['rpc_wall_max']:.2f}")
     print(f"Server compute ms: mean={summ['server_compute_mean']:.2f}  p50={summ['server_compute_p50']:.2f}  p95={summ['server_compute_p95']:.2f}  p99={summ['server_compute_p99']:.2f}  max={summ['server_compute_max']:.2f}")
 
-
+# Standard synchronous entry point that launches the asynchronous
+# benchmark driver.
 def main():
     asyncio.run(_main_async())
 
