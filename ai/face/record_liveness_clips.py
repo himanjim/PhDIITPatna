@@ -1,23 +1,11 @@
-# record_liveness_clips.py
 """
-Webcam-based liveness clip recorder with per-scenario validation + RESUME.
-
-Key features
-------------
-1) Records multiple scenarios (IDLE, HEAD_SHAKE, POSE, BLINK_TRY, NO_MOTION, MULTIFACE).
-2) Validates each clip with cheap metrics (Haar face count, brightness, blur, frame-diff motion).
-3) SAVES EACH SCENARIO IMMEDIATELY (atomic save) so progress is never lost.
-4) RESUME BY DEFAULT:
-   - If <out_dir>/<SCENARIO>.mp4 exists, it is treated as complete and skipped.
-   - A progress.json file records what was saved, with metrics + reasons.
-5) Optional BLUR:
-   - You can record BLUR manually, or auto-generate BLUR from another clip (default: IDLE).
-
-Notes
------
-- Face detection is Haar-cascade only (fast sanity gate). It is not a production face detector.
-- Validation thresholds are only to ensure you recorded “distinct enough” scenarios.
-  Tune thresholds to your lighting/camera setup if needed.
+This script records short webcam clips for a set of liveness-related
+scenarios and validates each clip with inexpensive quality and
+distinctiveness checks before saving it. The workflow is designed for
+dataset creation rather than for online inference: each scenario clip is
+captured interactively, reviewed by the user, written atomically to disk,
+and tracked in a progress file so that interrupted sessions can resume
+without losing prior work.
 """
 
 import os
@@ -45,7 +33,9 @@ SCENARIOS_DEFAULT = [
     # BLUR is handled separately (manual or auto-generated).
 ]
 
-
+# Hold the validation outcome for one recorded clip, including the binary
+# pass/fail decision, human-readable failure reasons, and the scalar
+# metrics used to justify that decision.
 @dataclass
 class ValidateResult:
     ok: bool
@@ -56,10 +46,14 @@ class ValidateResult:
 # =============================
 # Small utilities
 # =============================
+# Return the current local time in a stable ISO-like string format for
+# progress tracking.
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
-
+# Write a JSON file atomically by using a temporary file in the same
+# directory and then replacing the destination path. This reduces the risk
+# of leaving a partially written progress file after interruption.
 def atomic_write_json(path: str, obj: dict):
     """
     Write JSON atomically:
@@ -79,7 +73,8 @@ def atomic_write_json(path: str, obj: dict):
         except Exception:
             pass
 
-
+# Load the recorder progress file if present, returning a minimal default
+# structure when the file is absent or unreadable.
 def load_progress(progress_path: str) -> dict:
     if not os.path.exists(progress_path):
         return {"version": 1, "updated_at": None, "scenarios": {}}
@@ -93,7 +88,8 @@ def load_progress(progress_path: str) -> dict:
         # If progress.json is corrupted, start fresh but do NOT delete videos on disk.
         return {"version": 1, "updated_at": None, "scenarios": {}}
 
-
+# Update the progress record for one completed scenario, including the
+# saved clip path, timestamp, validation result, and validation metrics.
 def update_progress(progress_path: str, progress: dict, scenario: str, out_path: str,
                     vr: ValidateResult):
     """
@@ -114,6 +110,8 @@ def update_progress(progress_path: str, progress: dict, scenario: str, out_path:
 # =============================
 # UI helpers
 # =============================
+# Draw a stack of text lines on a preview frame for capture and review
+# guidance.
 def put_multiline_text(img, lines, x=10, y=25, dy=24,
                        color=(0, 255, 0), scale=0.6, thickness=2):
     for i, line in enumerate(lines):
@@ -124,11 +122,13 @@ def put_multiline_text(img, lines, x=10, y=25, dy=24,
 # =============================
 # Metrics
 # =============================
+# Compute the Laplacian-variance sharpness measure used as the blur metric
+# during clip validation.
 def laplacian_var(gray: np.ndarray) -> float:
     """Blur metric: variance of Laplacian. Higher => sharper."""
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-
+# Compute mean grayscale brightness for the current ROI.
 def brightness_mean(gray: np.ndarray) -> float:
     return float(gray.mean())
 
@@ -136,6 +136,8 @@ def brightness_mean(gray: np.ndarray) -> float:
 # =============================
 # Face detection (Haar) - cheap sanity gate
 # =============================
+# Load the OpenCV Haar cascade used as a lightweight face-count sanity
+# gate during clip validation.
 def load_haar() -> cv2.CascadeClassifier:
     xml = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
     cascade = cv2.CascadeClassifier(xml)
@@ -143,7 +145,9 @@ def load_haar() -> cv2.CascadeClassifier:
         raise RuntimeError(f"Failed to load Haar cascade: {xml}")
     return cascade
 
-
+# Detect approximate frontal-face bounding boxes with a Haar cascade. The
+# result is used only for simple capture validation, not as a production
+# face detector.
 def detect_faces_haar(cascade: cv2.CascadeClassifier, gray: np.ndarray) -> List[Tuple[int, int, int, int]]:
     """
     Returns list of face bboxes (x,y,w,h). Haar is approximate; treat as a sanity gate only.
@@ -156,13 +160,15 @@ def detect_faces_haar(cascade: cv2.CascadeClassifier, gray: np.ndarray) -> List[
     )
     return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
 
-
+# Select the largest detected face so that ROI-based validation focuses on
+# the most likely primary subject.
 def largest_face_bbox(faces: List[Tuple[int, int, int, int]]) -> Optional[Tuple[int, int, int, int]]:
     if not faces:
         return None
     return max(faces, key=lambda b: b[2] * b[3])
 
-
+# Crop a padded grayscale ROI around the selected face so that brightness,
+# blur, and motion measurements are less affected by background content.
 def crop_roi(gray: np.ndarray, bbox: Optional[Tuple[int, int, int, int]], pad: float = 0.35) -> np.ndarray:
     """
     Crop around face bbox with padding. If bbox missing, return full frame.
@@ -189,6 +195,8 @@ def crop_roi(gray: np.ndarray, bbox: Optional[Tuple[int, int, int, int]], pad: f
 # =============================
 # Video IO (atomic save)
 # =============================
+# Write one scenario clip to MP4 using a temporary file and atomic replace
+# so that partially written outputs are not mistaken for complete clips.
 def save_mp4_atomic(out_path: str, frames: List[np.ndarray], fps: float):
     """
     Atomic MP4 save:
@@ -223,7 +231,8 @@ def save_mp4_atomic(out_path: str, frames: List[np.ndarray], fps: float):
     # Atomic replace
     os.replace(tmp_path, out_path)
 
-
+# Load frames from an MP4 file into memory, optionally stopping after a
+# fixed number of frames.
 def load_mp4(path: str, max_frames: Optional[int] = None) -> Tuple[List[np.ndarray], float]:
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -244,6 +253,7 @@ def load_mp4(path: str, max_frames: Optional[int] = None) -> Tuple[List[np.ndarr
 # =============================
 # BLUR generation (auto)
 # =============================
+# Build a normalised motion-blur kernel oriented at the requested angle.
 def _motion_blur_kernel(ksize: int, angle_deg: float) -> np.ndarray:
     """Build a normalized motion-blur kernel (line) rotated by angle."""
     k = np.zeros((ksize, ksize), dtype=np.float32)
@@ -257,7 +267,8 @@ def _motion_blur_kernel(ksize: int, angle_deg: float) -> np.ndarray:
         k_rot /= s
     return k_rot
 
-
+# Generate a synthetic blur scenario from an existing clip by combining
+# Gaussian blur, motion blur, and optional downscale-upscale softness.
 def generate_blur_clip(frames: List[np.ndarray],
                        gaussian_ksize: int = 11,
                        motion_ksize: int = 17,
@@ -300,6 +311,10 @@ def generate_blur_clip(frames: List[np.ndarray],
 # =============================
 # Validation
 # =============================
+# Apply a lightweight validation layer to a recorded clip using simple
+# face-count, brightness, blur, and motion metrics. The goal is not to
+# certify liveness correctness, but to ensure that scenario clips are
+# distinct enough and of usable quality for later benchmarking.
 def validate_clip(
     frames_bgr: List[np.ndarray],
     fps_target: float,
@@ -423,6 +438,9 @@ def validate_clip(
 # =============================
 # Camera control
 # =============================
+# Open the selected webcam and request the desired capture properties,
+# using DirectShow first on Windows and then falling back to the default
+# backend.
 def open_camera(cam_index: int, width: int, height: int, fps: float) -> cv2.VideoCapture:
     """
     DirectShow first (Windows), fallback otherwise.
@@ -439,7 +457,8 @@ def open_camera(cam_index: int, width: int, height: int, fps: float) -> cv2.Vide
     cap.set(cv2.CAP_PROP_FPS, float(fps))
     return cap
 
-
+# Preview the live webcam feed until the user starts capture, then record a
+# fixed-length scenario clip at the requested target frame rate.
 def record_clip(cap: cv2.VideoCapture,
                 scenario: str,
                 instruction: str,
@@ -506,7 +525,8 @@ def record_clip(cap: cv2.VideoCapture,
 
     return frames
 
-
+# Replay a recorded clip once for manual acceptance or rejection before it
+# is saved.
 def review_clip(frames: List[np.ndarray], fps: float, title: str) -> bool:
     """
     Playback once. Press Y to accept, N to reject.
@@ -546,6 +566,9 @@ def review_clip(frames: List[np.ndarray], fps: float, title: str) -> bool:
 # =============================
 # Main workflow
 # =============================
+# Run the full clip-recording workflow: parse configuration, restore prior
+# progress if present, capture or skip each requested scenario, validate
+# and review the recorded clip, and save accepted outputs atomically.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", default="clips", help="Output folder")
