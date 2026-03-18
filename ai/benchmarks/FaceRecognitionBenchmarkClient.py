@@ -1,7 +1,12 @@
-# FaceRecognitionBenchmarkClient.py
-# Simulates concurrent voters submitting images to the DeepFace server
-# and collects metrics from both DeepFace and FAISS microservices.
-# Enhanced with detailed comments and exception logging.
+# This client script benchmarks a remote face-verification service by
+# simulating batches of voter requests and recording both end-to-end and
+# service-level timing information. For each request, it submits one image
+# to the verification endpoint, captures the overall round-trip time, and
+# extracts server-reported timings for embedding generation, FAISS access,
+# similarity search, and index update. The script is intended for load and
+# latency characterisation of a microservice-based prototype rather than
+# for election-grade deployment. Its output is a compact summary table that
+# supports both engineering diagnosis and academic reporting.
 
 import time
 from pathlib import Path
@@ -29,7 +34,11 @@ TIMEOUT = 100  # HTTP request timeout in seconds
 # IMAGE_FOLDER = posix_path + "/voter_images"
 IMAGE_FOLDER = "voter_images"
 
-# Load all image file paths from voter_images directory
+# Load all eligible face-image files from the configured input directory.
+# The function performs a simple extension-based filter and returns a flat
+# list of image paths, which then serves as the sampling pool for simulated
+# voter requests. This keeps the benchmark input preparation explicit and
+# reproducible.
 def load_face_images(folder_path):
     image_paths = []
     for filename in os.listdir(folder_path):
@@ -39,8 +48,13 @@ def load_face_images(folder_path):
 
 image_paths = load_face_images(IMAGE_FOLDER)
 
-# Simulate a single voter request
-# Measures total round-trip time and extracts metrics from server responses
+# Execute one simulated voter transaction against the verification service.
+# The function randomly selects an image, applies an artificial client-side
+# network delay, submits the image to the server, and records the resulting
+# response metrics in a shared results container. A small retry loop with
+# exponential backoff is included to reduce the effect of transient network
+# or service instability during load testing. The recorded duration reflects
+# the full client-observed request time, not only server-side processing.
 def simulate_request(results, index):
     start_time = time.perf_counter()
     img_path = random.choice(image_paths)
@@ -86,7 +100,11 @@ def simulate_request(results, index):
         # traceback.print_exc()
         results[index] = (-1, 500, None, None, None, None, None, None)
 
-# Capture CPU and memory usage before and after test batches
+# Capture a coarse snapshot of local CPU utilisation and process memory
+# usage for the benchmark client. These values are intended to provide
+# contextual information about host-side load before and after each batch,
+# rather than a fine-grained systems profile. They are useful when comparing
+# runs across different concurrency levels or hardware environments.
 def get_cpu_memory_usage():
     process = psutil.Process(os.getpid())
     cpu_percent = psutil.cpu_percent(interval=1)
