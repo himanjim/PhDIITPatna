@@ -1,26 +1,13 @@
 
 """
-test_liveness_clips_v3_FIXED4.py
-
-Fixes baseline call to match FINAL liveness_check signature:
-  liveness_check(frames_bgr, det=TwoStageDetector, face_mesh=FaceMesh, ...)
-
-Set env:
-  set GATEWAY_AUTH_TOKEN=test-token
-  set LVS_CLIPS_DIR=C:\path\to\clips
-  set MP_FACE_LANDMARKER_TASK=C:\path\to\face_landmarker.task   (only if mp.solutions missing)
+This module defines integration-style regression tests for the liveness
+pipeline. Each test compares the behavioural outcome of the reference
+implementation in `liveness_check.py` with the HTTP response returned by
+`lvs_service.py` for the same underlying clip. The purpose is to detect
+integration drift at the service boundary, including frame decoding,
+default handling, and context construction, rather than to re-validate
+the underlying liveness algorithm itself.
 """
-
-# Notes for maintainers
-# ---------------------
-# This test suite checks behavioural equivalence between:
-#   (a) the reference implementation in `liveness_check.py`, and
-#   (b) the HTTP surface exposed by `lvs_service.py`.
-# The intent is regression detection at the integration boundary (decode, defaults,
-# and context construction), not algorithmic re-validation.
-#
-# Test data: MP4 clips produced by `record_liveness_clips.py` (scenarios like IDLE,
-# HEAD_SHAKE, POSE, etc.). Configure the folder via LVS_CLIPS_DIR.
 
 import base64
 import os
@@ -37,22 +24,34 @@ import liveness_check as lc
 
 SCENARIOS: List[str] = ["IDLE", "HEAD_SHAKE", "POSE", "BLINK_TRY", "NO_MOTION", "MULTIFACE", "BLUR"]
 
+# Resolve the directory containing scenario clips used by the regression
+# tests, preferring the configured environment variable and otherwise
+# falling back to a local `clips` folder.
 def _clips_dir() -> Path:
     d = os.environ.get("LVS_CLIPS_DIR", "").strip()
     return Path(d) if d else (Path.cwd() / "clips")
 
+# Build the expected file path for one named test scenario clip.
 def _scenario_path(s: str) -> Path:
     return _clips_dir() / f"{s}.mp4"
 
+# Return only those scenarios for which a corresponding clip file is
+# currently available, so that parametrised tests remain robust to partial
+# clip sets.
 def _available_scenarios() -> List[str]:
     return [s for s in SCENARIOS if _scenario_path(s).is_file()]
 
+# Encode one BGR frame as a base64 JPEG string in the same transport
+# format expected by the HTTP liveness endpoint.
 def _b64_jpeg(frame_bgr):
     ok, buf = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
         raise RuntimeError("jpeg encode failed")
     return base64.b64encode(buf.tobytes()).decode("ascii")
 
+# For each available scenario clip, compare the boolean liveness outcome
+# returned by the HTTP service with the outcome of the local reference
+# implementation executed on the same decoded frames.
 @pytest.mark.parametrize("scenario", _available_scenarios())
 def test_service_matches_baseline_on_clip(scenario: str):
     ctx = svc._get_ctx_for_tests()
