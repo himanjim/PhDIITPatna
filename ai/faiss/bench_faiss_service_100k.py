@@ -1,24 +1,12 @@
-# -*- coding: utf-8 -*-
-#
-# bench_faiss_service_100k.py
-# ------------------------
-# Lightweight benchmarking client for the internal FAISS similarity service.
-#
-# What this script measures:
-#   (i) Optional index build time by calling /v1/upsert_batch to add N vectors.
-#   (ii) Search throughput and request-level latency using either:
-#        - /v1/search       (single-query path), or
-#        - /v1/search_batch (batched path; reduces HTTP and JSON overhead).
-#
-# Important constraints:
-#   - Upsert requires the service to be started with ENABLE_UPDATES=1.
-#   - For speed, the benchmark uses the binary-embedding fast path (base64 float32 bytes).
-#   - This is a client-side benchmark; reported times include client scheduling + HTTP overhead.
-#
-# Interpretation:
-#   - For kernel-only timing, use the server-reported field 'faiss_search_time_ms' returned by
-#     the service, which isolates FAISS compute from transport overhead.
-#
+# This script benchmarks the internal FAISS HTTP service from the client
+# side. It can optionally populate the index through `/v1/upsert_batch`
+# and then measure search throughput and request latency using either the
+# single-query or batch-query endpoints. Because the benchmark is executed
+# outside the service process, the reported timings include client
+# scheduling, HTTP transport, and JSON handling in addition to FAISS
+# search time. For kernel-level interpretation, the script also records
+# the server-reported FAISS timing fields returned by the service.
+
 import argparse
 import asyncio
 import base64
@@ -34,6 +22,8 @@ import numpy as np
 
 
 # ---- Encoding utilities ---------------------------------------------------
+# Encode one float32 embedding into the base64 wire format expected by the
+# service's fast binary-ingest and fast binary-query paths.
 def b64_f32_row(v: np.ndarray) -> str:
     """Encode one float32 embedding as base64 of raw bytes (len=dim*4)."""
     v = np.asarray(v, dtype=np.float32)
@@ -44,6 +34,8 @@ def b64_f32_row(v: np.ndarray) -> str:
 
 
 # ---- Synthetic vector generation -----------------------------------------
+# Generate synthetic embeddings for index population and query traffic,
+# with optional L2 normalisation to mimic unit-norm embedding pipelines.
 def make_vectors(rng: np.random.Generator, n: int, dim: int, normalize: bool) -> np.ndarray:
     """Generate random vectors (optionally L2-normalized)."""
     x = rng.standard_normal((n, dim), dtype=np.float32)
@@ -55,6 +47,8 @@ def make_vectors(rng: np.random.Generator, n: int, dim: int, normalize: bool) ->
 
 
 # ---- Index population (optional) -----------------------------------------
+# Populate the service index through repeated `/v1/upsert_batch` calls and
+# retain a small sample of inserted vectors as a later query pool.
 async def upsert_100k(
     client: httpx.AsyncClient,
     base_url: str,
@@ -112,7 +106,8 @@ async def upsert_100k(
 
 
 # ---- Benchmark modes ------------------------------------------------------
-# Single-query mode: maximises HTTP overhead and is useful mainly for p95/p99 observations.
+# Benchmark the single-query search endpoint, recording both end-to-end
+# request latency and the server-reported FAISS kernel time.
 async def bench_search_single(
     client: httpx.AsyncClient,
     base_url: str,
@@ -158,7 +153,8 @@ async def bench_search_single(
 
 
 
-# Batch mode: closer to production (gateway → FAISS) behaviour for high request volumes.
+# Benchmark the batch-search endpoint, which amortises HTTP and JSON
+# overhead across multiple query vectors per request.
 async def bench_search_batch(
     client: httpx.AsyncClient,
     base_url: str,
@@ -221,6 +217,8 @@ async def bench_search_batch(
 
 
 # ---- CLI / orchestration --------------------------------------------------
+# Parse benchmark settings, perform a health check, optionally populate the
+# index, build the query pool, and run the selected search benchmark mode.
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True, help="FAISS service base URL, e.g. http://127.0.0.1:9010")
