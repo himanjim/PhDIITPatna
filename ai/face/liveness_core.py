@@ -1,22 +1,14 @@
-
 """
-liveness_core_UPDATED_v2_FIXED4.py
+This module provides a thin integration layer around the main liveness
+evaluation logic. It standardises how the detector and landmarking
+components are constructed, exposes a compact context object for reuse by
+services and tests, and wraps the core `liveness_check` function behind a
+smaller helper interface.
 
-Fixes your current test failure:
-  AttributeError: 'FaceAnalysis' object has no attribute 'count'
-
-Root cause
-----------
-Your FINAL `liveness_check.py` expects `det` to be an instance of
-`TwoStageDetector` (it calls det.count(...) and det.get(...)).
-
-This wrapper therefore builds and passes:
-  det = liveness_check.TwoStageDetector(...)
-
-and builds:
-  face_mesh = mp.solutions.face_mesh.FaceMesh(...)
-
-without modifying liveness_check.py.
+Its main role is architectural rather than algorithmic: it ensures that
+all callers build compatible detector and MediaPipe objects and that clip
+loading and result formatting are handled consistently across the service
+and benchmark code paths.
 """
 
 # Design note
@@ -40,7 +32,8 @@ import numpy as np
 
 from mp_face_mesh_tasks_shim import patch_mediapipe_solutions
 
-
+# Hold the heavyweight runtime objects and configuration values required to
+# execute the liveness pipeline consistently across repeated calls.
 @dataclass
 class LivenessContext:
     det: Any
@@ -51,7 +44,8 @@ class LivenessContext:
     det_strong_size: Tuple[int, int]
     det_score_thr: float
 
-
+# Parse a width-by-height string such as "512x512", returning the supplied
+# default when parsing fails.
 def _parse_wh(s: str, default: Tuple[int, int]) -> Tuple[int, int]:
     try:
         s = (s or "").lower().replace(" ", "")
@@ -64,7 +58,8 @@ def _parse_wh(s: str, default: Tuple[int, int]) -> Tuple[int, int]:
         pass
     return default
 
-
+# Determine a sensible default ONNX Runtime provider list and context
+# identifier from the local execution environment.
 def _default_providers_and_ctxid() -> Tuple[List[str], int]:
     try:
         import onnxruntime as ort
@@ -76,7 +71,9 @@ def _default_providers_and_ctxid() -> Tuple[List[str], int]:
     except Exception:
         return ["CPUExecutionProvider"], -1
 
-
+# Construct the shared liveness runtime context, including the two-stage
+# detector and the MediaPipe face-mesh instance, from explicit arguments
+# or environment-derived defaults.
 def build_context(
     *,
     providers_csv: str = "",
@@ -128,7 +125,8 @@ def build_context(
         det_score_thr=float(det_score_thr),
     )
 
-
+# Load a video clip into a list of BGR frames, optionally limiting the
+# number of frames retained.
 def load_clip_frames_bgr(clip_path: str, *, max_frames: int = 60) -> List[np.ndarray]:
     cap = cv2.VideoCapture(clip_path)
     if not cap.isOpened():
@@ -144,7 +142,10 @@ def load_clip_frames_bgr(clip_path: str, *, max_frames: int = 60) -> List[np.nda
     cap.release()
     return out
 
-
+# Execute the liveness pipeline on a sequence of frames using the supplied
+# shared context, and return a compact dictionary containing the binary
+# outcome, human-readable explanation, and numeric metrics extracted from
+# the richer result object.
 def run_liveness(
     frames_bgr: List[np.ndarray],
     ctx: LivenessContext,
