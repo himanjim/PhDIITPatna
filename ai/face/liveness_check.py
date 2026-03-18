@@ -1,53 +1,17 @@
 """
-liveness_check.py (paper-ready benchmark harness; calibrated to record_liveness_clips.py)
+This module implements a clip-based liveness evaluation and benchmarking
+harness aligned with the corresponding clip-recording workflow. It reads
+recorded scenario clips, applies the liveness pipeline, reports per-run
+and per-scenario outcomes, and writes summary tables suitable for later
+analysis. The implementation also supports optional threshold calibration
+from previously recorded metrics so that evaluation thresholds can remain
+consistent with the capture environment used to generate the clips.
 
-What this script is
--------------------
-This file is a *benchmark harness* that runs your liveness pipeline on the clips
-captured by `record_liveness_clips.py` and produces paper-ready tables (CSV) for:
-
-  - Per-scenario correctness (expected PASS/FAIL)
-  - Latency breakdown (face-count / prompt / ROI-metrics / total)
-  - Aggregated mean/std/p95 timings across runs
-
-Key requirement satisfied
--------------------------
-Script-2 uses Script-1 as reference for thresholds:
-
-- It uses the *same metrics definitions* as `record_liveness_clips.py` for:
-    (a) blur: Laplacian variance on face ROI
-    (b) motion: mean(absdiff)/255 on a fixed 160x160 ROI (stable across sizes)
-    (c) brightness: mean(gray) on ROI (reported; optional warning gate)
-
-- If `progress.json` (written by Script-1) exists in --clips-dir, this script
-  can auto-calibrate `motion_thr` and `blur_thr` from your recorded metrics.
-  This is the most reliable way to get "paper-ready" results that match your
-  *actual webcam + lighting* rather than someone else’s defaults.
-
-Speedups (without sacrificing accuracy)
----------------------------------------
-1) Two-stage InsightFace detector:
-   - FAST detection runs most of the time (smaller det_size).
-   - STRONG detection runs only when FAST is suspicious.
-
-2) Face-counting on stride frames (det_stride): coercion/multiface gate is
-   computed using fewer frames.
-
-3) ROI-metric sampling (roi_stride): expensive metrics (mask/print/replay) are
-   computed on a subset of frames. Micro-motion is still computed frame-to-frame
-   on the normalized ROI to retain sensitivity.
-
-Run example
------------
-  C:\temp\phdvenv\Scripts\python liveness_check.py --clips-dir liveness_clips --runs 3 --max-frames 60 --save-csv --out-prefix paper_liveness --save-latex
-
-Expected behavior
------------------
-Live scenarios should PASS:
-  IDLE, HEAD_SHAKE, POSE, BLINK_TRY
-
-Attack / negative scenarios should FAIL:
-  NO_MOTION, BLUR, MULTIFACE, REPLAY, PRINT, MASK
+The file combines three roles in one place: metric definitions, liveness
+decision logic, and benchmark orchestration. For that reason, the most
+important functions are the metric helpers, the core `liveness_check`
+procedure, and the calibration helpers that translate clip statistics into
+operational thresholds.
 """
 
 from __future__ import annotations
@@ -90,6 +54,8 @@ warnings.filterwarnings('ignore', message=r'.*Feedback manager requires a model 
 # =============================================================================
 # Small stats helpers
 # =============================================================================
+# Compute the empirical 95th percentile of a list of timing values for
+# benchmark summary reporting.
 def p95(values: List[float]) -> float:
     if not values:
         return 0.0
@@ -97,7 +63,8 @@ def p95(values: List[float]) -> float:
     k = int(math.ceil(0.95 * (len(arr) - 1)))
     return float(arr[k])
 
-
+# Return the mean and population standard deviation of a list of numeric
+# values, using zeroes when no observations are available.
 def mean_std(values: List[float]) -> Tuple[float, float]:
     if not values:
         return 0.0, 0.0
@@ -110,6 +77,8 @@ def mean_std(values: List[float]) -> Tuple[float, float]:
 # =============================================================================
 # Metrics (aligned to record_liveness_clips.py)
 # =============================================================================
+# Compute the Laplacian-variance sharpness measure used as the blur metric
+# in both the recorder and the benchmark harness.
 def lap_var(gray: np.ndarray) -> float:
     """Blur metric: variance of Laplacian. Higher => sharper."""
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
@@ -136,7 +105,8 @@ def colorfulness(bgr: np.ndarray) -> float:
 
     return math.sqrt(std_rg * std_rg + std_yb * std_yb) + 0.3 * math.sqrt(mean_rg * mean_rg + mean_yb * mean_yb)
 
-
+# Compute the frame-to-frame micro-motion score on a fixed-size grayscale
+# ROI so that thresholds remain transferable across clips and resolutions.
 def frame_diff_motion(prev_gray_norm: np.ndarray, gray_norm: np.ndarray) -> float:
     """
     Motion metric (same definition as Script-1):
@@ -147,7 +117,8 @@ def frame_diff_motion(prev_gray_norm: np.ndarray, gray_norm: np.ndarray) -> floa
     d = cv2.absdiff(prev_gray_norm, gray_norm)
     return float(d.mean() / 255.0)
 
-
+# Estimate a replay or display-screen cue from row-wise high-frequency
+# variation in the grayscale ROI.
 def replay_score(gray_roi: np.ndarray) -> float:
     """
     Replay/screen cue: row-wise high-frequency energy. Scanlines yield strong
@@ -165,7 +136,8 @@ def replay_score(gray_roi: np.ndarray) -> float:
 
     return float(0.70 * row_diff + 0.30 * resid_std)
 
-
+# Estimate a lower-face occlusion cue from exposure-adjusted brightness
+# structure and texture uniformity in the grayscale ROI.
 def mask_score(gray_roi: np.ndarray) -> Tuple[float, float, float, float]:
     """
     Exposure-adaptive mask detection.
@@ -215,7 +187,8 @@ _NOSE_TIP = 1
 _EYE_L = 33
 _EYE_R = 263
 
-
+# Compute the mean eye-aspect ratio from MediaPipe facial landmarks for
+# blink detection.
 def ear_from_landmarks(lm) -> float:
     """Eye Aspect Ratio (EAR) from normalized landmarks (mean of both eyes)."""
 
@@ -232,7 +205,8 @@ def ear_from_landmarks(lm) -> float:
 
     return 0.5 * (ear_l + ear_r)
 
-
+# Compute a simple yaw proxy from 2D facial landmark geometry for pose
+# prompt verification.
 def yaw_ratio_from_landmarks(lm) -> float:
     """
     Fast yaw proxy from 2D geometry:
@@ -245,7 +219,8 @@ def yaw_ratio_from_landmarks(lm) -> float:
     eye_dist = abs(rx - lx) + 1e-6
     return float((nx - mid) / eye_dist)
 
-
+# Decide whether a blink event is present using a dynamic EAR threshold
+# derived from the observed sequence itself.
 def blink_observed(ears: List[float], min_closed_frames: int = 2) -> Tuple[bool, float]:
     """
     Robust blink detector using dynamic EAR threshold:
@@ -270,7 +245,8 @@ def blink_observed(ears: List[float], min_closed_frames: int = 2) -> Tuple[bool,
     open_after = any(not s for s in states[last + 1 :])
     return bool(open_before and open_after), thr
 
-
+# Decide whether a sufficient pose movement has been observed from the
+# distribution of yaw-ratio values.
 def pose_observed(yaw_ratios: List[float], yaw_thr: float) -> bool:
     """POSE observed if 90th percentile of |yaw_ratio| exceeds yaw_thr."""
     if len(yaw_ratios) < 6:
@@ -282,6 +258,8 @@ def pose_observed(yaw_ratios: List[float], yaw_thr: float) -> bool:
 # =============================================================================
 # Video I/O
 # =============================================================================
+# Read video frames into memory for subsequent liveness analysis, with an
+# optional frame cap and optional width-based downscaling.
 def read_video_frames(path: str, max_frames: int = 0, resize_w: int = 0) -> List[np.ndarray]:
     """Read BGR frames from video."""
     cap = cv2.VideoCapture(path)
@@ -306,7 +284,8 @@ def read_video_frames(path: str, max_frames: int = 0, resize_w: int = 0) -> List
         raise RuntimeError(f"No frames read from: {path}")
     return frames
 
-
+# Write a sequence of BGR frames to an MP4 file for synthetic attack clip
+# generation.
 def write_video(path: str, frames_bgr: List[np.ndarray], fps: float = 30.0) -> None:
     """Write frames to mp4."""
     h, w = frames_bgr[0].shape[:2]
@@ -382,7 +361,9 @@ def clamp_bbox(x1: int, y1: int, x2: int, y2: int, w: int, h: int) -> Tuple[int,
         y2 = min(h, y1 + 1)
     return x1, y1, x2, y2
 
-
+# Implement a two-stage face detector in which a smaller, faster detector
+# is used on most frames and a stronger detector is invoked only when the
+# fast pass is ambiguous.
 class TwoStageDetector:
     """
     FAST -> STRONG confirmation detector.
@@ -434,7 +415,9 @@ class TwoStageDetector:
     def count(self, frame_bgr: np.ndarray) -> int:
         return len(self.get(frame_bgr))
 
-
+# Derive one stable ROI bounding box from the centre frame of the clip and
+# reuse it across the whole sequence so that ROI-based metrics remain
+# spatially consistent.
 def roi_from_center_face(
     frames: List[np.ndarray],
     det: TwoStageDetector,
@@ -510,6 +493,9 @@ class LivenessResult:
 # =============================================================================
 # Threshold calibration from Script-1 output (progress.json)
 # =============================================================================
+# Load the recorder-generated progress file, if present, so that the
+# benchmark can reuse recorded scenario metrics for threshold calibration
+# and consistency checks.
 def load_progress_json(clips_dir: str) -> Optional[dict]:
     """
     record_liveness_clips.py writes <clips_dir>/progress.json with per-scenario metrics.
@@ -533,7 +519,9 @@ def _progress_metric(progress: dict, scenario: str, key: str) -> Optional[float]
     except Exception:
         return None
 
-
+# Derive motion and blur thresholds from scenario statistics when
+# sufficiently separated measurements are available, otherwise retain the
+# supplied defaults.
 def auto_calibrate_thresholds(
     progress: dict,
     *,
@@ -598,6 +586,8 @@ def auto_calibrate_thresholds(
 # =============================================================================
 # Calibration helpers (uses your loaded clips as ground truth for thresholds)
 # =============================================================================
+# Compute the scalar clip-level metrics used by the liveness decision logic
+# without applying any pass/fail gating.
 def compute_clip_scalars(
     frames_bgr: List[np.ndarray],
     det: TwoStageDetector,
@@ -675,7 +665,9 @@ def compute_clip_scalars(
     scal.print_mean = float(np.mean(prints)) if prints else 0.0
     return scal
 
-
+# Adjust replay, mask, and print thresholds from live-clip statistics so
+# that attack cues can be tuned while reducing false rejection of genuine
+# live clips.
 def auto_calibrate_attack_thresholds(
     idle_scal: LivenessScalars,
     *,
@@ -713,6 +705,9 @@ def auto_calibrate_attack_thresholds(
 # =============================================================================
 # Liveness check core
 # =============================================================================
+# Execute the full liveness decision procedure on a clip: face-count
+# gating, stable ROI extraction, ROI-based metric computation, prompt
+# verification when requested, and final motion-based liveness gating.
 def liveness_check(
     frames_bgr: List[np.ndarray],
     det: TwoStageDetector,
@@ -978,7 +973,9 @@ def find_clip(clips_dir: str, name: str) -> Optional[str]:
             return os.path.join(clips_dir, fn)
     return None
 
-
+# Generate synthetic replay, print, or mask attack clips from a live base
+# sequence so that attack thresholds can be evaluated without requiring a
+# separate recorded clip for each attack condition.
 def simulate_from_live(live_frames: List[np.ndarray], scenario: str, seed: int) -> List[np.ndarray]:
     rng = random.Random(seed)
     np.random.seed(seed)
@@ -1004,7 +1001,8 @@ def simulate_from_live(live_frames: List[np.ndarray], scenario: str, seed: int) 
 
     raise ValueError(f"Unknown synthetic scenario: {scenario}")
 
-
+# Print one formatted benchmark result row together with its main debug
+# scalars for interactive inspection during a run.
 def print_row(scenario: str, run_id: int, lr: LivenessResult, expect_ok: bool) -> None:
     test_pass = (lr.ok == expect_ok)
     liveness_s = "PASS" if lr.ok else "FAIL"
@@ -1062,6 +1060,10 @@ def print_progress_summary(progress: dict) -> None:
 # =============================================================================
 # Main
 # =============================================================================
+# Run the full benchmark workflow: parse configuration, initialise the
+# detector and landmark components, load or synthesise scenario clips,
+# calibrate thresholds when requested, execute repeated scenario runs, and
+# write summary outputs.
 def main():
     ap = argparse.ArgumentParser(description="Paper-ready liveness benchmark from recorded clips")
 
