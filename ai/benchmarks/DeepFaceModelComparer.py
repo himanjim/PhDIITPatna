@@ -1,3 +1,5 @@
+# This script evaluates face-verification performance across multiple DeepFace model, detector, and distance-metric combinations on an identity-organised image dataset. It first groups images by person, then constructs genuine and impostor image pairs, precomputes facial embeddings for each model-detector setting, and finally measures verification performance using accuracy, precision, recall, F1 score, and confusion-matrix counts. The purpose is comparative benchmarking of configuration choices under a common dataset and pairing protocol. The results are written incrementally to CSV so that long evaluation runs remain recoverable and easy to inspect.
+
 import os  # For handling file and directory operations
 import pandas as pd  # For storing and exporting results as DataFrame/CSV
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score  # Evaluation metrics
@@ -22,7 +24,7 @@ detector_backends = ["retinaface", "fastmtcnn"]  # Face detectors to evaluate
 start_time = time.time()
 
 # ----------- STEP 1: Load Image Paths Grouped by Person -----------
-
+# Read the dataset from the base directory and organise image paths by identity, assuming that each subfolder corresponds to one person. This grouped structure is the basis for later construction of positive pairs from within-person images and negative pairs from between-person images. The function only includes image files with supported extensions and ignores non-directory entries.
 
 def load_grouped_images(base_dir):
     grouped = {}  # Dictionary to store image paths grouped by person
@@ -41,7 +43,7 @@ grouped_images = load_grouped_images(base_dir)  # Load image paths grouped by pe
 
 # ----------- STEP 2: Generate Positive and Negative Pairs -----------
 
-
+# Construct the labelled verification dataset used for evaluation. Positive pairs are formed from all unique image combinations belonging to the same person, while negative pairs are formed from images belonging to different persons. This exhaustive strategy maximises pair coverage for the available dataset, although it can grow rapidly in size as the number of identities and images increases.
 def generate_pairs(grouped_images):
     pairs = []  # List to store image pairs with labels
     persons = list(grouped_images.keys())  # Get list of person IDs (folder names)
@@ -64,7 +66,7 @@ def generate_pairs(grouped_images):
 pairs = generate_pairs(grouped_images)  # Generate all image pairs
 
 # ----------- STEP 3: Precompute Embeddings -----------
-
+# Precompute and cache facial embeddings for all images under a specific model-detector configuration. This avoids repeating feature extraction for every image pair and makes the subsequent verification stage substantially more efficient. Images for which face detection or embedding extraction fails are logged separately so that downstream pair evaluation can skip them in a controlled and transparent manner.
 
 def compute_embeddings(image_paths, model_name, detector_backend):
     failed_images = []  # To track failed embeddings
