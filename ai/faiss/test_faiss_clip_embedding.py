@@ -1,22 +1,12 @@
-# -*- coding: utf-8 -*-
-#
-# test_faiss_clip_embedding.py
-# -------------------------
-# Optional end-to-end integration test: MP4 clip → InsightFace embedding → FAISS upsert/search.
-#
-# Rationale:
-#   - Unit tests validate API contracts and numeric behaviour with synthetic vectors.
-#   - This test validates that the service also works with *real* face embeddings produced by
-#     the same family of models used in the LVS stack (InsightFace 'buffalo_l').
-#
-# Execution model:
-#   - Disabled by default to keep CI lightweight.
-#   - Enable by setting: RUN_FAISS_CLIP_TEST=1 and FAISS_TEST_CLIP=/abs/path/to/clip.mp4
-#
-# Operational notes:
-#   - On first run, InsightFace may download model assets into the user profile directory.
-#   - The clip should contain a clear, single face for at least one frame.
-#
+# This module defines an optional end-to-end integration test for the
+# FAISS service using a real face embedding extracted from an MP4 clip.
+# Unlike the synthetic-vector unit tests, this test verifies that the
+# service accepts and returns embeddings from the same model family used by
+# the wider liveness and face-verification stack. It remains disabled by
+# default so that routine test runs do not depend on heavy model assets or
+# a local clip file.
+
+
 import os
 import importlib
 from pathlib import Path
@@ -33,11 +23,12 @@ CLIP = os.getenv("FAISS_TEST_CLIP", "").strip()
 @pytest.mark.skipif(not RUN, reason="Set RUN_FAISS_CLIP_TEST=1 to enable")
 @pytest.mark.skipif(not CLIP, reason="Set FAISS_TEST_CLIP=/abs/path/to/clip.mp4")
 
-# The test intentionally searches for a frame with *exactly one* detected face to avoid
-# ambiguous embeddings (multi-face) and to keep the assertion deterministic.
+# Extract one normalised InsightFace embedding from a real clip, insert it
+# into the FAISS service, and verify that the same embedding is returned
+# as a near-zero-distance self-match.
 def test_faiss_with_clip_embedding():
-    # Heavy deps imported only when enabled.
-    # Heavy dependencies are imported lazily so that the module can be imported without them.
+    # Import the heavier media and face-analysis dependencies only when the
+    # optional integration test has actually been enabled.
     import cv2
     from insightface.app import FaceAnalysis
 
@@ -58,8 +49,8 @@ def test_faiss_with_clip_embedding():
     c = TestClient(app)
     hdr = {"X-Internal-Auth": "test-token"}
 
-    # Build InsightFace detector/recognizer.
-    # Note: First run may download models into ~/.insightface
+    # Build the InsightFace analysis object used to locate a frame
+    # containing exactly one face and to compute its embedding.
     fa = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
 
     # Configure detector/recogniser. det_size trades accuracy vs speed; here we keep a standard
@@ -70,8 +61,8 @@ def test_faiss_with_clip_embedding():
     assert cap.isOpened(), f"Cannot open clip: {CLIP}"
     emb = None
 
-    # Frame scan is capped to bound runtime and to avoid dependence on clip length.
-    # Scan up to ~120 frames to find exactly one face.
+    # Scan a bounded number of frames to find one unambiguous single-face
+    # embedding, which keeps the subsequent FAISS assertions deterministic.
     for _ in range(120):
         ok, frame = cap.read()
         if not ok:
@@ -88,9 +79,9 @@ def test_faiss_with_clip_embedding():
     assert emb is not None, "Could not extract a single-face embedding from the clip (try a clearer clip/frame)."
 
 
-    # Self-match: searching for the exact inserted embedding must return the same ID with
-    # near-zero distance (numerical noise only).
-    # Upsert and self-search
+    # Insert the extracted embedding under a fixed identifier and then
+    # verify that the same embedding returns that identifier as its nearest
+    # neighbour.
     r = c.post("/v1/upsert_batch", json={"ids":[123], "vectors":[emb.tolist()]}, headers=hdr)
     assert r.status_code == 200, r.text
 
