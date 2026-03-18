@@ -1,25 +1,16 @@
 """
-faiss_service.py
-----------------
-Election-scoped FAISS similarity service (INTERNAL ONLY).
+This module implements an internal FAISS-based similarity service for
+election-scoped de-duplication and benchmarking workloads. It exposes
+search, batch search, policy, health, metrics, and controlled upsert
+operations while enforcing a fail-closed internal authentication boundary.
+The service keeps a CPU index as the durable source of truth and may
+optionally clone that index to GPU for lower-latency exact search.
 
-This is the deployable successor of your old benchmark-only `faiss_ms (1).py`.
-It preserves the old harness endpoints (/search, /search_batch, /ping) but adds:
-- Explicit internal authentication (fail-closed)
-- Stable "policy snapshot" hashing (RFC8785 JCS + SHA-256) for audit/public dashboard
-- Optional Ed25519 signing of the policy snapshot (for publication)
-- Optional encrypted snapshots of the FAISS index (Fernet) for restore/restart
-- Optional batched background updates (for benchmark realism), without forcing it in election mode
-
-Security boundary (per UI + audit docs)
----------------------------------------
-- This service MUST NOT be Internet-exposed.
-- Only trusted backend services (e.g., LVS / gateway) may call it.
-- Do not log embeddings/vectors.
-- Do not return neighbor IDs or distances to client devices; those are internal only.
-
-Run:
-  uvicorn faiss_service:app --host 0.0.0.0 --port 9010
+The design is intentionally conservative. It separates the audit-facing
+policy surface from the search path, supports deterministic policy
+hashing, and allows updates only when explicitly enabled. Legacy
+endpoints are retained so that older benchmark harnesses continue to
+operate without forcing the service itself into a benchmark-only design.
 """
 
 # Implementation note
@@ -128,6 +119,8 @@ METRICS_WINDOW = int(os.getenv("METRICS_WINDOW", "2048"))
 
 
 # ------------------------ Canonical JSON + hashing ------------------------ #
+# Canonicalise the policy object into a deterministic byte representation
+# suitable for stable hashing and optional signing.
 def _jcs_bytes(obj) -> bytes:
     """
     RFC8785 JCS canonicalization (preferred). If python-jcs is unavailable, use a strict
@@ -137,12 +130,13 @@ def _jcs_bytes(obj) -> bytes:
         return jcs.canonicalize(obj)
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
-
+# Compute the SHA-256 digest of the supplied canonical policy bytes.
 def _sha256_hex(b: bytes) -> str:
     import hashlib
     return hashlib.sha256(b).hexdigest()
 
-
+# Optionally sign the canonical policy snapshot using Ed25519 when signing
+# material has been configured in the environment.
 def _maybe_sign_policy(canon: bytes) -> dict:
     """
     Optionally sign canonical policy bytes using Ed25519.
@@ -171,6 +165,8 @@ def _maybe_sign_policy(canon: bytes) -> dict:
 
 
 # ------------------------ Snapshot encryption (optional) ------------------------ #
+# Build the Fernet helper used for optional encrypted snapshot storage,
+# returning None when encryption has not been configured.
 def _fernet() -> Optional["Fernet"]:
     if not SNAPSHOT_FERNET_KEY:
         return None
@@ -179,7 +175,8 @@ def _fernet() -> Optional["Fernet"]:
     # Fernet expects a urlsafe base64-encoded 32-byte key.
     return Fernet(SNAPSHOT_FERNET_KEY.encode("utf-8"))
 
-
+# Serialize the CPU source-of-truth FAISS index, optionally encrypt it,
+# and write it atomically to disk.
 def save_snapshot(index_cpu: faiss.Index, path: str) -> None:
     """
     Serialize the CPU FAISS index to bytes, optionally encrypt, and atomically write to disk.
@@ -193,7 +190,8 @@ def save_snapshot(index_cpu: faiss.Index, path: str) -> None:
         w.write(blob)
     os.replace(tmp, path)
 
-
+# Serialize the CPU source-of-truth FAISS index, optionally encrypt it,
+# and write it atomically to disk.
 def load_snapshot(path: str) -> Optional[faiss.Index]:
     """
     Load (and optionally decrypt) a serialized FAISS index from disk.
@@ -209,6 +207,9 @@ def load_snapshot(path: str) -> Optional[faiss.Index]:
 
 
 # ------------------------ Pydantic models ------------------------ #
+# Internal request model for a single similarity query, supporting either
+# base64-encoded float32 bytes or a JSON float list representation of the
+# embedding.
 class QueryVector(BaseModel):
     """
     Internal query object.
@@ -226,13 +227,14 @@ class QueryVector(BaseModel):
         description="Embedding as float list (slower; JSON-heavy).",
     )
 
-
+# Internal request model for batch similarity search.
 class QueryBatch(BaseModel):
     subject_refs: List[str]
     vectors_b64_f32: Optional[List[str]] = None
     vectors: Optional[List[List[float]]] = None
 
-
+# Request model for explicit batch insertion of vectors with application-
+# level identifiers.
 class UpsertBatch(BaseModel):
     """
     Add vectors with explicit IDs.
@@ -244,6 +246,8 @@ class UpsertBatch(BaseModel):
 
 
 # ------------------------ Index manager ------------------------ #
+# Hold the durable CPU index, the currently served index, and the serving
+# mode metadata needed by the application.
 @dataclass
 class FaissManager:
     """
@@ -257,7 +261,8 @@ class FaissManager:
     def ntotal(self) -> int:
         return int(self.index_srv.ntotal)
 
-
+# Construct the configured CPU index type, using explicit identifier
+# mapping in both FlatL2 and optional HNSW modes.
 def _make_cpu_index() -> faiss.Index:
     """
     Create the baseline CPU index.
@@ -274,7 +279,9 @@ def _make_cpu_index() -> faiss.Index:
     base = faiss.IndexFlatL2(EMB_DIM)
     return faiss.IndexIDMap2(base)
 
-
+# Attempt to clone the CPU source-of-truth index to GPU for low-latency
+# exact search, while falling back to CPU serving if GPU support is
+# unavailable or unsuitable for the chosen index type.
 def _clone_to_gpu(cpu_index: faiss.Index) -> Tuple[faiss.Index, bool]:
     """
     Attempt to clone a CPU index to GPU. Falls back to CPU if GPU is unavailable or unsupported.
@@ -304,7 +311,8 @@ def _clone_to_gpu(cpu_index: faiss.Index) -> Tuple[faiss.Index, bool]:
     except Exception:
         return cpu_index, False
 
-
+# Optionally populate the CPU index with synthetic vectors for benchmark
+# realism when no persisted snapshot is supplied.
 def _bootstrap_random(index_cpu: faiss.Index) -> None:
     """
     Optional: populate the index with random vectors (benchmark realism).
@@ -323,7 +331,9 @@ def _bootstrap_random(index_cpu: faiss.Index) -> None:
         index_cpu.add_with_ids(vecs, ids)
         start += n
 
-
+# Build the FAISS manager by loading a snapshot when available, otherwise
+# constructing an empty index and optionally bootstrapping it with
+# synthetic data, then selecting the final serving index.
 def build_manager() -> FaissManager:
     # 1) Load snapshot (if provided)
     cpu_idx = None
@@ -346,6 +356,8 @@ def build_manager() -> FaissManager:
 
 
 # ------------------------ Lightweight latency stats ------------------------ #
+# Maintain a bounded rolling window of recent latency observations for the
+# lightweight metrics endpoint.
 class LatencyStats:
     def __init__(self, window: int):
         self._q: Deque[float] = deque(maxlen=window)
@@ -383,14 +395,16 @@ _faiss_lock = asyncio.Lock()
 # Background updates are queued to decouple ingestion from FAISS mutation in benchmark mode.
 _update_q: "asyncio.Queue[Tuple[np.ndarray, np.ndarray]]" = asyncio.Queue()  # (vecs_f32, ids_i64)
 
-
+# Enforce the fail-closed internal authentication requirement on protected
+# endpoints.
 async def require_internal_auth(req: Request):
     tok = req.headers.get("x-internal-auth", "")
     # Starlette normalises header keys; lookup is case-insensitive for incoming requests.
     if tok != INTERNAL_AUTH_TOKEN:
         raise HTTPException(status_code=403, detail="forbidden")
 
-
+# Convert unexpected exceptions into a generic internal-error response so
+# that implementation details are not leaked to callers.
 @app.exception_handler(Exception)
 async def _err_handler(request: Request, exc: Exception):
     # Avoid leaking internal details.
@@ -398,14 +412,15 @@ async def _err_handler(request: Request, exc: Exception):
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return JSONResponse(status_code=500, content={"detail": "internal_error"})
 
-
+# Start the background update flusher when update support has been enabled.
 @app.on_event("startup")
 async def _startup():
     # Background batch flusher (only when ENABLE_UPDATES=1)
     if ENABLE_UPDATES:
         asyncio.create_task(_flush_updates())
 
-
+# Drain queued updates in bounded batches and apply them to the CPU source-
+# of-truth index and, when active, the GPU serving clone.
 async def _flush_updates():
     """
     Flush enqueued updates in batches. Mirrors the old faiss_ms behavior, but keeps
@@ -450,6 +465,8 @@ async def _flush_updates():
 
 
 # ------------------------ Vector parsing ------------------------ #
+# Decode one query embedding from either the binary base64 form or the
+# JSON float-list form accepted by the API.
 def _vec_from_payload(q: QueryVector) -> np.ndarray:
     if q.vector_b64_f32:
         raw = base64.b64decode(q.vector_b64_f32)
@@ -463,7 +480,8 @@ def _vec_from_payload(q: QueryVector) -> np.ndarray:
         raise HTTPException(400, f"vector must be length {EMB_DIM}")
     return np.asarray(q.vector, dtype=np.float32).reshape(1, -1)
 
-
+# Decode a batch of query embeddings from the accepted request formats
+# into a float32 matrix.
 def _vecs_from_batch(b: QueryBatch) -> np.ndarray:
     if b.vectors_b64_f32 is not None:
         if len(b.vectors_b64_f32) != len(b.subject_refs):
@@ -488,6 +506,8 @@ def _vecs_from_batch(b: QueryBatch) -> np.ndarray:
 
 
 # ------------------------ Policy snapshot ------------------------ #
+# Construct the audit-facing policy snapshot that describes the active
+# service configuration and threshold semantics.
 def _policy_obj() -> dict:
     return {
         "service": "faiss_similarity",
@@ -505,11 +525,14 @@ def _policy_obj() -> dict:
 
 
 # ------------------------ Endpoints (v1) ------------------------ #
+# Return a minimal health and configuration summary suitable for internal
+# readiness checks.
 @app.get("/v1/health")
 async def v1_health():
     return {"status": "ok", "ntotal": mgr.ntotal(), "index_type": INDEX_TYPE, "gpu": mgr.use_gpu}
 
-
+# Return the current policy object together with its canonical hash and,
+# when configured, its signature metadata.
 @app.get("/v1/policy", dependencies=[Depends(require_internal_auth)])
 async def v1_policy():
     obj = _policy_obj()
@@ -518,7 +541,8 @@ async def v1_policy():
     out.update(_maybe_sign_policy(canon))
     return out
 
-
+# Return lightweight rolling latency summaries and update-queue state for
+# internal monitoring.
 @app.get("/v1/metrics", dependencies=[Depends(require_internal_auth)])
 async def v1_metrics():
     return {
@@ -528,7 +552,8 @@ async def v1_metrics():
         "update_queue_depth": int(_update_q.qsize()) if ENABLE_UPDATES else 0,
     }
 
-
+# Execute a single nearest-neighbour search and return both squared-L2 and
+# true-L2 distance values together with the service-level FAISS timing.
 @app.post("/v1/search", dependencies=[Depends(require_internal_auth)])
 async def v1_search(q: QueryVector):
     vec = _vec_from_payload(q)
@@ -569,7 +594,8 @@ async def v1_search(q: QueryVector):
         "faiss_search_time_ms": round(dt_ms, 3),
     }
 
-
+# Execute a batch nearest-neighbour search and return one structured
+# result per subject reference.
 @app.post("/v1/search_batch", dependencies=[Depends(require_internal_auth)])
 async def v1_search_batch(b: QueryBatch):
     vecs = _vecs_from_batch(b)
@@ -613,7 +639,9 @@ async def v1_search_batch(b: QueryBatch):
 
     return {"items": items, "faiss_search_time_ms": round(dt_ms, 3)}
 
-
+# Insert a batch of vectors with explicit identifiers when updates are
+# enabled, updating both the CPU source-of-truth index and the GPU clone
+# if present.
 @app.post("/v1/upsert_batch", dependencies=[Depends(require_internal_auth)])
 async def v1_upsert_batch(u: UpsertBatch):
     if not ENABLE_UPDATES:
@@ -663,7 +691,7 @@ async def v1_upsert_batch(u: UpsertBatch):
 
 
 # ------------------------ Backward-compatible endpoints (legacy harness) ------------------------ #
-# These preserve your old benchmark interface from faiss_ms (1).py.
+# Legacy request model retained for older benchmark harnesses.
 class LegacyQueryVector(BaseModel):
     voter_id: int
     vector: List[float]
@@ -673,7 +701,8 @@ class LegacyQueryBatch(BaseModel):
     voter_ids: List[int]
     vectors: List[List[float]]
 
-
+# Backward-compatible single-query endpoint that preserves the older
+# squared-L2 distance field naming used by legacy clients.
 @app.post("/search", dependencies=[Depends(require_internal_auth)])
 async def legacy_search(q: LegacyQueryVector):
     # Preserve old behavior: squared L2 distance reported as "distance"
@@ -699,7 +728,8 @@ async def legacy_search(q: LegacyQueryVector):
         "faiss_index_update_time_ms": round(update_time_ms, 3),  # legacy field (queue put only)
     }
 
-
+# Backward-compatible batch-search endpoint that preserves the older field
+# conventions used by legacy clients.
 @app.post("/search_batch", dependencies=[Depends(require_internal_auth)])
 async def legacy_search_batch(b: LegacyQueryBatch):
     bb = QueryBatch(subject_refs=[str(x) for x in b.voter_ids], vectors=b.vectors)
@@ -724,7 +754,8 @@ async def legacy_search_batch(b: LegacyQueryBatch):
         )
     return out
 
-
+# Backward-compatible batch-search endpoint that preserves the older field
+# conventions used by legacy clients.
 @app.get("/ping")
 async def ping():
     # No auth, for local container probes only.
