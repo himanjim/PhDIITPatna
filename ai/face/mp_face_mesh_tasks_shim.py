@@ -1,19 +1,10 @@
-
 """
-mp_face_mesh_tasks_shim_v2.py
-
-Tasks-backed shim that provides:
-    mp.solutions.face_mesh.FaceMesh
-
-This is required when the installed `mediapipe` package does not ship legacy
-`mp.solutions` but your unchanged `liveness_check.py` still expects it.
-
-Model required (download from official MediaPipe Face Landmarker page):
-    face_landmarker.task
-
-Provide it via:
-  - env MP_FACE_LANDMARKER_TASK=...full path..., or
-  - place at .\models\face_landmarker.task
+This module provides a compatibility shim for environments in which the
+installed MediaPipe package exposes the newer Tasks interface but not the
+legacy `mediapipe.solutions.face_mesh.FaceMesh` API expected by existing
+code. It wraps the Tasks Face Landmarker and presents a minimal
+`FaceMesh`-like object whose output structure matches the subset of the
+legacy interface used by the liveness pipeline.
 """
 
 # Compatibility note
@@ -46,6 +37,8 @@ class _LandmarkList:
 class _ProcessResult:
     multi_face_landmarks: Optional[List[_LandmarkList]]
 
+# Locate the MediaPipe Tasks face-landmarker model file either from the
+# configured environment variable or from the local default models folder.
 def _resolve_task_model_path() -> str:
     env = os.environ.get("MP_FACE_LANDMARKER_TASK") or os.environ.get("MP_FACE_LANDMARKER_TASK_PATH")
     if env and os.path.isfile(env):
@@ -59,7 +52,14 @@ def _resolve_task_model_path() -> str:
         "or place it at .\\models\\face_landmarker.task"
     )
 
+# Provide a minimal FaceMesh-compatible wrapper around the MediaPipe Tasks
+# Face Landmarker so that unchanged callers can continue to request
+# `process()` and inspect `multi_face_landmarks`.
 class FaceMesh:
+
+    # Construct the Tasks face-landmarker instance and retain a lock so
+    # that calls to the underlying implementation can be serialised when
+    # thread safety is uncertain.
     def __init__(
         self,
         static_image_mode: bool = False,  # accepted; ignored
@@ -91,6 +91,8 @@ class FaceMesh:
         self._mp = mp
         self._landmarker = FaceLandmarker.create_from_options(opts)
 
+    # Release the underlying landmarker resources if the Tasks object
+    # exposes a close method.
     def close(self):
         try:
             self._landmarker.close()
@@ -100,6 +102,9 @@ class FaceMesh:
     def __del__(self):
         self.close()
 
+    # Run the Tasks face landmarker on one RGB image and translate the
+    # result into the minimal landmark-list structure expected by legacy
+    # callers.
     def process(self, image_rgb) -> _ProcessResult:
         mp = self._mp
         with self._lock:
@@ -117,6 +122,9 @@ class FaceMesh:
             out.append(_LandmarkList(landmark=lm_list))
         return _ProcessResult(multi_face_landmarks=out)
 
+# Inject the shimmed `face_mesh.FaceMesh` object into `mediapipe.solutions`
+# when the installed MediaPipe build does not already provide that legacy
+# namespace.
 def patch_mediapipe_solutions() -> None:
     import mediapipe as mp  # type: ignore
 
