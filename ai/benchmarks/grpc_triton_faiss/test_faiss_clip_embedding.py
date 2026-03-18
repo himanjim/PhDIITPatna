@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-
-#
-# test_faiss_clip_embedding.py  (gRPC edition)
-# -------------------------------------------
-# Optional integration test: MP4 clip → InsightFace embedding → gRPC IngestBatch → gRPC Search.
-#
-# Enable with:
-#   RUN_FAISS_CLIP_TEST=1
-#   FAISS_TEST_CLIP=/abs/path/to/clip.mp4
-#
+# This module defines an optional integration test for the FAISS gRPC
+# service using a realistic end-to-end path: a face embedding is extracted
+# from a video clip with InsightFace, ingested into the FAISS service
+# through IngestBatch, and then queried again through Search to confirm
+# that the stored vector can be retrieved as a self-match. The test is
+# intended for functional integration checking rather than performance
+# benchmarking. It can run either against an already running FAISS server
+# or against a temporary local subprocess started specifically for the
+# test.
+
 import os
 import socket
 import subprocess
@@ -27,6 +27,10 @@ CLIP = os.getenv("FAISS_TEST_CLIP", "").strip()
 FAISS_ADDR = os.getenv("FAISS_ADDR", "").strip()     # e.g. "127.0.0.1:50051"
 TEST_TOKEN = os.getenv("TEST_TOKEN", "").strip()     # must match INTERNAL_AUTH_TOKEN
 
+# Locate and import the generated protobuf stubs from a small set of
+# project-local paths so that the test can run from a checked-out source
+# tree without requiring manual PYTHONPATH changes. This keeps the test
+# easier to execute in development and continuous-integration settings.
 def _import_stubs():
     here = Path(__file__).resolve().parent
     for base in (here, here.parent, Path.cwd()):
@@ -41,7 +45,9 @@ def _import_stubs():
 
 dedup_pb2, dedup_pb2_grpc = _import_stubs()
 
-
+# Obtain an ephemeral local TCP port that can be used for a temporary FAISS
+# subprocess started by the test when no external service address has been
+# supplied.
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -49,7 +55,9 @@ def _free_port() -> int:
     s.close()
     return p
 
-
+# Wait until the specified TCP port becomes reachable or raise an error
+# after the timeout. This is used when the test starts a local subprocess
+# and needs a simple readiness check before opening the gRPC channel.
 def _wait_port(host: str, port: int, timeout_s: float = 10.0) -> None:
     t0 = time.time()
     while time.time() - t0 < timeout_s:
@@ -60,7 +68,13 @@ def _wait_port(host: str, port: int, timeout_s: float = 10.0) -> None:
             time.sleep(0.05)
     raise RuntimeError(f"port not ready: {host}:{port}")
 
-
+# Execute an end-to-end integration test of the FAISS gRPC service using a
+# face embedding extracted from a real video clip. The test supports two
+# modes: it can connect to an already running FAISS server, or it can start
+# a temporary local server subprocess with a minimal configuration. After
+# extracting and normalising one embedding from the clip, the test ingests
+# the vector, waits briefly for asynchronous index flushing, and then polls
+# until the same vector is returned as a nearest-neighbour self-match.
 @pytest.mark.asyncio
 async def test_faiss_with_clip_embedding():
     if not RUN:
@@ -75,7 +89,10 @@ async def test_faiss_with_clip_embedding():
 
     token = TEST_TOKEN or "test-token"
 
-    # Decide mode once.
+    # Decide whether to use an externally supplied FAISS service or to
+    # launch a temporary local subprocess for the duration of the test. The
+    # subprocess path keeps the test self-contained when no external target
+    # is available.
     p = None
     if FAISS_ADDR:
         if not TEST_TOKEN:
@@ -115,11 +132,14 @@ async def test_faiss_with_clip_embedding():
         _wait_port("127.0.0.1", port)
 
     try:
-        # No extra _wait_port() here. For external services we rely on gRPC channel_ready;
-        # for local subprocess we already waited above.
-        #_wait_port("127.0.0.1", port)
+        # For an externally supplied service, readiness is checked through
+        # the gRPC channel. For a locally spawned subprocess, the TCP port
+        # has already been awaited before entering the test body.
 
-        # Extract one-face embedding from clip
+        # Extract a single normalised face embedding from the supplied video
+        # clip. The test accepts the first frame that contains exactly one
+        # detected face with a valid embedding, which keeps the integration
+        # path realistic while avoiding ambiguity from multi-face frames.
         fa = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
         fa.prepare(ctx_id=-1, det_size=(640, 640))
 
@@ -139,21 +159,27 @@ async def test_faiss_with_clip_embedding():
                 break
         cap.release()
         assert emb is not None, "Could not extract a single-face embedding from the clip."
-
+        
+        # Create the authenticated gRPC client used for ingestion and
+        # search. The same internal-auth metadata is required whether the
+        # target service is externally supplied or locally spawned.
         md = (("x-internal-auth", token),)
         ch = grpc.aio.insecure_channel(target)
         await ch.channel_ready()
         stub = dedup_pb2_grpc.FaissDedupStub(ch)
         
-        # In Python gRPC stubs, RPC callables are attached on the *instance* (in __init__),
-        # so class-level hasattr() checks are not valid.
+        # Python gRPC callables are attached to the stub instance, so the
+        # capability check must be performed on the constructed object.
         if not hasattr(stub, "IngestBatch"):
             pytest.fail(
                 "IngestBatch callable is missing on the stub instance. "
                 "This usually means the wrong 'gen/' was imported or stubs were not regenerated."
             )
 
-        # Ingest (queued) then wait for flush
+        # Submit the extracted embedding through the append-only ingest path
+        # so that it becomes available for later nearest-neighbour search.
+        # The test uses a fixed application-level identifier to make the
+        # expected self-match explicit.
         req_ing = dedup_pb2.IngestBatchRequest(
             ids=[123],
             embeddings_f32=[emb.tobytes()],
@@ -167,8 +193,10 @@ async def test_faiss_with_clip_embedding():
             
         await asyncio.sleep(0.2)
 
-        # Search self-match
-        # Search self-match (updates may flush asynchronously)
+        # Poll for a self-match rather than issuing a single immediate
+        # search, because the service may flush queued updates to the index
+        # asynchronously. The test therefore checks eventual visibility of
+        # the ingested vector rather than assuming synchronous durability.
         req = dedup_pb2.SearchRequest(query_id=1, embedding_f32=emb.tobytes())
 
         r = None
@@ -184,6 +212,9 @@ async def test_faiss_with_clip_embedding():
         assert float(r.distance_l2) <= 2e-2
 
         await ch.close()
+    # Ensure that any locally spawned FAISS subprocess is terminated even
+    # if the test fails partway through, so that repeated test runs do not
+    # leave orphaned background processes.
     finally:
         if p is not None:
             p.terminate()
