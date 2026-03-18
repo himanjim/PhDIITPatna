@@ -1,21 +1,10 @@
-# -*- coding: utf-8 -*-
-#
-# test_faiss_unit.py
-# -----------------
-# Unit-level regression tests for the internal FAISS similarity service.
-#
-# Scope:
-#   - Validates fail-closed internal authentication.
-#   - Exercises the canonical policy endpoint used by audit/public dashboard tooling.
-#   - Confirms correctness of core endpoints: upsert_batch, search, search_batch.
-#   - Confirms legacy compatibility endpoints (/search, /search_batch) for older harnesses.
-#
-# Design notes:
-#   - Tests run against FastAPI TestClient (in-process), so they measure functional behaviour
-#     rather than network performance.
-#   - The index is initialised with a tiny deterministic configuration (EMB_DIM=8) to keep
-#     runtime low and make assertions easy to interpret.
-#
+# This module defines unit-level regression tests for the internal FAISS
+# similarity service exposed by `faiss_service.py`. The tests run against
+# FastAPI's in-process TestClient, so they validate service behaviour,
+# request contracts, authentication, and deterministic similarity results
+# without introducing network transport effects. A small fixed-dimension
+# index is used so that expected nearest-neighbour outcomes remain easy to
+# interpret and assert.
 
 # Standard library
 import os
@@ -27,8 +16,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-# The fixture configures the service using environment variables and imports the module
-# under test. This mirrors typical runtime configuration without needing a live server.
+# Configure a deterministic, CPU-only FAISS service instance for the test
+# module and return the FastAPI application object under test.
 @pytest.fixture(scope="module")
 def faiss_app():
     # Deterministic tiny CPU-only index for fast tests.
@@ -44,14 +33,15 @@ def faiss_app():
     return mod.app
 
 
-# Helper: the service expects an internal auth token in the X-Internal-Auth header.
-# HTTP header lookup in Starlette is case-insensitive, so this spelling is sufficient.
+# Return the internal-auth header required by protected endpoints in the
+# service.
 def _hdr():
     # faiss_service reads header 'x-internal-auth' (case-insensitive)
     return {"X-Internal-Auth": "test-token"}
 
 
-# Basic liveness check: validates that the app starts and exposes a health endpoint.
+# Verify that the service starts successfully and exposes a basic health
+# endpoint.
 def test_health(faiss_app):
     c = TestClient(faiss_app)
     r = c.get("/v1/health")
@@ -59,15 +49,16 @@ def test_health(faiss_app):
     assert r.json()["status"] == "ok"
 
 
-# Security invariant: requests without a valid internal token must be rejected.
+# Verify that protected endpoints reject unauthenticated requests rather
+# than defaulting to permissive behaviour.
 def test_auth_fail_closed(faiss_app):
     c = TestClient(faiss_app)
     r = c.get("/v1/policy")
     assert r.status_code == 403
 
 
-# Policy snapshot: used for audit tooling to verify that the service is running with the
-# expected configuration (thresholds, dimensions, index type).
+# Verify that the policy endpoint returns both the active policy object and
+# a stable SHA-256 hash suitable for audit and dashboard tooling.
 def test_policy_ok(faiss_app):
     c = TestClient(faiss_app)
     r = c.get("/v1/policy", headers=_hdr())
@@ -77,8 +68,8 @@ def test_policy_ok(faiss_app):
     assert isinstance(j["policy_hash_sha256"], str) and len(j["policy_hash_sha256"]) == 64
 
 
-# Core functional path: insert a few vectors, then verify self-match and non-match behaviour
-# under a strict (small) threshold.
+# Verify the core functional path: explicit vector insertion followed by
+# nearest-neighbour search under a deliberately strict threshold.
 def test_upsert_and_search(faiss_app):
     c = TestClient(faiss_app)
 
@@ -109,8 +100,8 @@ def test_upsert_and_search(faiss_app):
     assert float(j2["distance_l2"]) > 0.50
 
 
-# Batch search: validates the request/response schema and that per-item subject refs are
-# preserved in order for downstream correlation.
+# Verify the legacy compatibility endpoints retained for older benchmark
+# harnesses and scripts.
 def test_search_batch(faiss_app):
     c = TestClient(faiss_app)
 
