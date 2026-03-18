@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
 """
-triton_batch_bench_optimized.py
-Measurement boundary (critical for interpretation)
---------------------------------------------------
-This benchmark intentionally excludes image acquisition and preprocessing costs (disk I/O, JPEG decode,
-resize, and normalisation). Images are preloaded and converted into the model’s expected CHW float32
-tensors before timing begins. Reported latencies therefore represent *Triton inference service time*
-plus client-side RPC overhead, not full end-to-end biometric processing.
-
-Offered load vs achieved throughput
------------------------------------
-The --rps parameter is an *offered arrival rate* (open-loop). When offered load exceeds service capacity,
-the benchmark may (i) accumulate in-flight work (bounded by --concurrency), and/or (ii) drop inputs in
-client-batch mode if the internal producer queue is full. For reviewer-facing reporting, always cite:
-(a) achieved images/sec, (b) p95/p99 latency, and (c) error/drop rate together.
-
-Batching caveat
----------------
-Client-side batching can only form larger batches if sufficient requests arrive within the specified
---batch-window-ms. In interactive settings with tight queue-delay bounds (e.g., 1–2 ms), typical batch
-sizes may remain small (often 1–3), so throughput scaling should primarily be justified via horizontal
-replication of Triton replicas rather than relying on large effective batch sizes.
+This script benchmarks Triton-based embedding inference under two client
+submission models: single-image RPCs and client-side microbatched RPCs.
+Images are loaded and converted into model-ready tensors before timing
+begins, so the reported results reflect Triton inference plus client-side
+RPC behaviour rather than full end-to-end image processing. The benchmark
+is intended for service-capacity analysis, including latency, throughput,
+concurrency effects, batching behaviour, and overload response under an
+open-loop offered load.
 """
 
 from __future__ import annotations
@@ -46,7 +33,11 @@ IMAGE_FOLDER = os.getenv("IMAGE_FOLDER", "face_benchmark_gdrive/voter_images")
 IMG_SIZE = (112, 112)  # H,W
 EMB_DIM = int(os.getenv("EMB_DIM", "512"))
 
-
+# Preload and preprocess all usable images from the configured directory
+# before the benchmark starts. Each image is decoded, converted to float32,
+# resized to the model input shape, and transformed into CHW layout so
+# that the timed benchmark path excludes file-system and preprocessing
+# overhead.
 def load_images(folder: str) -> List[np.ndarray]:
     """Preload + preprocess images (CHW float32 in [0,1])."""
     imgs: List[np.ndarray] = []
@@ -64,7 +55,9 @@ def load_images(folder: str) -> List[np.ndarray]:
         raise RuntimeError(f"No images found in IMAGE_FOLDER={folder!r}")
     return imgs
 
-
+# Summarise a list of latency values in milliseconds using standard
+# descriptive statistics commonly reported in systems benchmarking,
+# including p50, p95, p99, mean, and maximum.
 def np_stats_ms(vals: List[float]) -> Dict[str, float]:
     """Compute p50/p95/p99/mean/max for millisecond values."""
     if not vals:
@@ -79,7 +72,10 @@ def np_stats_ms(vals: List[float]) -> Dict[str, float]:
         "max": float(a.max()),
     }
 
-
+# Validate that the deployed Triton model is configured for batching and
+# that its declared maximum batch size is compatible with the requested
+# client-side microbatch size. This prevents the benchmark from running in
+# a configuration that cannot realise the intended batching behaviour.
 def check_model_batching(client: InferenceServerClient, batch_size: int) -> None:
     """Fail early if Triton model batching is disabled or max_batch_size < requested batch_size."""
 
@@ -97,7 +93,10 @@ def check_model_batching(client: InferenceServerClient, batch_size: int) -> None
     if max_bs < batch_size:
         raise RuntimeError(f"Model max_batch_size={max_bs} < requested batch_size={batch_size}.")
 
-
+# Execute one Triton inference call for the supplied batch and return the
+# embedding tensor. The underlying client call is blocking, so it is moved
+# into a worker thread to preserve compatibility with the surrounding
+# asyncio-based benchmark harness.
 async def triton_infer(client: InferenceServerClient, batch: np.ndarray, out: InferRequestedOutput) -> np.ndarray:
     """Run one blocking Triton infer call in a worker thread (asyncio.to_thread)."""
 
@@ -106,22 +105,32 @@ async def triton_infer(client: InferenceServerClient, batch: np.ndarray, out: In
     resp = await asyncio.to_thread(client.infer, TRITON_MODEL, inputs=[ii], outputs=[out])
     return resp.as_numpy(EMB_LAYER)
 
-
+# Track currently outstanding asyncio tasks without retaining an unbounded
+# history of completed tasks. This keeps the benchmark harness lightweight
+# while still allowing a final drain step after request scheduling stops.
 class TaskTracker:
     """Tracks outstanding tasks without storing a huge list."""
 
     def __init__(self) -> None:
         self._tasks: Set[asyncio.Task] = set()
 
+    # Register a newly created task and arrange for it to be removed from
+    # the tracked set automatically when it completes.
     def track(self, t: asyncio.Task) -> None:
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
+    # Wait until all currently tracked tasks have completed. This is used
+    # after the scheduling window closes so that in-flight RPCs are not
+    # abandoned before summary statistics are computed.
     async def drain(self) -> None:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-
+# Run the benchmark in single-image mode using an open-loop constant-
+# arrival scheduler. Each scheduled request sends exactly one image to
+# Triton, and the function records per-call and per-image latency together
+# with basic success and failure counts after the warmup interval.
 async def run_single(
     client: InferenceServerClient,
     imgs: List[np.ndarray],
@@ -140,6 +149,9 @@ async def run_single(
     interval = 1.0 / rps_images
     next_deadline = time.perf_counter()
 
+    # Execute one single-image inference request under the concurrency
+    # semaphore and record the resulting latency and outcome if the call
+    # falls within the measured portion of the run.
     async def one_call() -> None:
         async with sem:
             img = random.choice(imgs)
@@ -178,7 +190,12 @@ async def run_single(
         if now - next_deadline > interval:
             next_deadline = now
 
-
+# Run the benchmark in client-side microbatching mode. Images are offered
+# to a bounded local queue at the configured open-loop arrival rate, and a
+# consumer task flushes batches according to the configured batch-size and
+# batch-window limits. This mode is intended to study the interaction
+# between arrival rate, batching opportunity, concurrency, and overload
+# behaviour.
 async def run_client_batch(
     client: InferenceServerClient,
     imgs: List[np.ndarray],
@@ -197,13 +214,15 @@ async def run_client_batch(
 ) -> None:
     """Client microbatching: producer enqueues images at rps; consumer flushes batches."""
     
-    # The producer queue is deliberately bounded to prevent unbounded RAM growth under overload.
-    # This is an *engineering backpressure control* for the benchmark harness itself.
-    # If the queue fills, inputs are dropped and counted (images_dropped), which is preferable to
-    # silently accumulating minutes of latent backlog that would distort tail latency statistics.
+    # Use a bounded producer queue so that the harness itself does not
+    # create unbounded memory growth under overload. When this queue fills,
+    # offered inputs are dropped and counted explicitly.
 
     q: "asyncio.Queue[np.ndarray]" = asyncio.Queue(maxsize=max(1, batch_size) * max(1, sem._value) * 2)
 
+    # Offer images to the local batching queue at the configured open-loop
+    # rate. If the queue is full, the input is dropped rather than delayed,
+    # preserving the intended arrival model of the benchmark.
     async def producer() -> None:
         interval = 1.0 / rps_images
         next_deadline = time.perf_counter()
@@ -217,10 +236,10 @@ async def run_client_batch(
                 q.put_nowait(random.choice(imgs))
                 if now >= t_warm_end:
                     counters["images_enqueued"] += 1
-    # When QueueFull occurs, the harness drops the offered input to preserve an open-loop arrival model.
-    # This does not represent a “system failure” of Triton; it indicates the offered arrival rate exceeded
-    # what the client-side harness could buffer while respecting bounded memory/latency.
-    # Report the drop_rate as part of capacity/SLA justification.
+            # When the local queue is full, the harness drops the offered
+            # input rather than allowing unbounded backlog to accumulate.
+            # The resulting drop count is therefore part of benchmark
+            # interpretation, not merely a client-side anomaly.
             except asyncio.QueueFull:
                 if now >= t_warm_end:
                     counters["images_dropped"] += 1
@@ -229,6 +248,9 @@ async def run_client_batch(
             if now - next_deadline > interval:
                 next_deadline = now
 
+    # Execute one batched Triton inference request and record both per-call
+    # latency and a simple per-image latency proxy obtained by dividing the
+    # batch latency by the realised batch size.
     async def one_batch_call(batch_imgs: List[np.ndarray]) -> None:
         bs = len(batch_imgs)
         async with sem:
@@ -256,6 +278,10 @@ async def run_client_batch(
                 else:
                     counters["calls_fail"] += 1
 
+    # Collect images from the local queue and flush them as a batch once
+    # either the target batch size is reached or the batch window expires.
+    # This approximates a simple client-side microbatcher with bounded
+    # queueing delay.
     async def consumer() -> None:
         while time.perf_counter() < t_end or (not q.empty()):
             batch_imgs: List[np.ndarray] = []
@@ -279,7 +305,10 @@ async def run_client_batch(
     tracker.track(asyncio.create_task(producer()))
     tracker.track(asyncio.create_task(consumer()))
 
-
+# Orchestrate the full benchmark run, including input loading, Triton
+# client setup, warmup handling, execution in the selected benchmark mode,
+# draining of outstanding tasks, and final summary generation. This is the
+# main experimental control function of the script.
 async def run_bench(mode: str, rps_images: float, duration_s: int, warmup_s: int,
                     concurrency: int, batch_size: int, batch_window_ms: int, seed: int) -> None:
     if rps_images <= 0:
@@ -373,7 +402,8 @@ async def run_bench(mode: str, rps_images: float, duration_s: int, warmup_s: int
     print("\n=== Triton benchmark summary ===")
     print(summary)
 
-
+# Parse command-line arguments and launch the asynchronous benchmark with
+# the requested workload parameters.
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["single", "client-batch"], default="single")
@@ -401,6 +431,6 @@ def main() -> None:
         seed=args.seed,
     ))
 
-
+# Standard command-line entry point.
 if __name__ == "__main__":
     main()
