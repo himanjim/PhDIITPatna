@@ -1,11 +1,21 @@
+# This script performs offline image augmentation for an identity-organised
+# face dataset in which each subfolder corresponds to one person. For each
+# source image, it generates several augmented variants using photometric
+# and geometric transformations such as brightness change, blur,
+# rotation, colour shift, cropping, and horizontal flipping. The purpose
+# is dataset expansion for downstream face-recognition experiments rather
+# than online inference.
 import os
 import imageio
 import imgaug.augmenters as iaa
 
 # Define the parent directory that contains subfolders of images
-parent_dir = "C:/Users/himan/Downloads/archive/Image_Train/"  # <<< CHANGE this to your root folder
+parent_dir = "C:/Users/himan/Downloads/archive/Image_Train/"  # Root directory containing one subfolder per identity.
 
-# Define image augmentation pipeline
+# Define the augmentation pipeline applied to each input image. The chosen
+# transforms aim to introduce moderate appearance variation while keeping
+# the identity signal recognisable for face-recognition training or
+# evaluation.
 augmenter = iaa.Sequential([
     iaa.Multiply((0.6, 1.4)),                    # Brightness variation
     iaa.GaussianBlur(sigma=(0.0, 1.5)),          # Blur
@@ -15,7 +25,8 @@ augmenter = iaa.Sequential([
     iaa.Fliplr(0.5)                              # Horizontal flip
 ])
 
-# Traverse each subdirectory (representing a person)
+# Traverse each identity folder and create a fixed number of augmented
+# outputs for every supported image file found within that folder.
 for person_dir in os.listdir(parent_dir):
     full_path = os.path.join(parent_dir, person_dir)
 
