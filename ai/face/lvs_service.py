@@ -1,40 +1,11 @@
-
 """
-lvs_service_UPDATED_v3_FIXED5.py
-
-FastAPI LVS that calls your FINAL `liveness_check.py` via `liveness_core_UPDATED_v2_FIXED4.py`.
-
-Why this FIXED5 exists
-----------------------
-Your curl calls used:
-  GET  /v1/policy
-  POST /v1/liveness/check_clip
-
-But FIXED4 only exposed:
-  GET  /v1/health
-  POST /v1/liveness
-
-So FIXED5 adds the missing endpoints **without changing** the tested /v1/liveness behaviour.
-
-Endpoints
----------
-- GET  /v1/health
-- GET  /v1/policy                   (auth required)
-- POST /v1/liveness                 (auth required)  [frames_b64]
-- POST /v1/liveness/check_clip      (auth required)  [clip_path -> frames]
-
-Auth
-----
-All protected endpoints require:
-  Header: X-Gateway-Auth: <token>
-and env var:
-  GATEWAY_AUTH_TOKEN=<same token>
-
-MediaPipe Tasks shim
---------------------
-If your MediaPipe wheel does not ship `mp.solutions`, keep the shim in place
-(sitecustomize.py + mp_face_mesh_tasks_shim_v2.py) and set:
-  MP_FACE_LANDMARKER_TASK=C:\path\to\face_landmarker.task
+This module exposes the liveness pipeline through a small FastAPI service.
+Its responsibilities are intentionally narrow: authenticate requests,
+decode and validate inputs, invoke the shared liveness core, and return a
+stable response structure that includes both the decision outcome and the
+policy hash under which the request was evaluated. The service supports
+two main input modes: direct frame submission for normal API use and
+local clip-path submission as a convenience path for offline testing.
 """
 
 # Service overview
@@ -92,6 +63,10 @@ PROVIDERS = os.environ.get("PROVIDERS", "")
 
 # Policy snapshot & hash (useful for audit / transparency dashboards)
 _POLICY_DOMAIN = "AI_POLICY_HASH_V1"
+
+# Capture the active threshold and detector configuration in a compact
+# policy object so that responses can be tied to a stable, hashable policy
+# snapshot.
 _POLICY_OBJ = {
     "election_id": ELECTION_ID,
     "det_fast_size": DET_FAST_SIZE,
@@ -118,7 +93,9 @@ _POLICY_HASH = hashlib.sha256(
 # -----------------------------
 _CTX: Optional[core.LivenessContext] = None
 
-
+# Lazily construct and retain the shared liveness runtime context so that
+# the detector and landmark components are built once and then reused
+# across requests.
 def _ensure_ctx() -> core.LivenessContext:
     """
     Build TwoStageDetector + FaceMesh once and reuse.
@@ -146,7 +123,9 @@ def _ensure_ctx() -> core.LivenessContext:
     )
     return _CTX
 
-
+# Enforce the gateway authentication requirement on protected endpoints.
+# If the service itself is misconfigured, fail explicitly rather than
+# processing unauthenticated requests.
 def _auth_or_403(req: Request) -> None:
     """
     Fail-closed auth: if token not configured, return 500 (misconfiguration).
@@ -157,7 +136,8 @@ def _auth_or_403(req: Request) -> None:
     if tok != GATEWAY_AUTH_TOKEN:
         raise HTTPException(status_code=403, detail="forbidden")
 
-
+# Decode one base64-encoded JPEG frame into a BGR image suitable for the
+# downstream liveness pipeline.
 def _decode_frame_b64(s: str) -> np.ndarray:
     """
     Base64 -> JPEG bytes -> BGR frame.
@@ -169,7 +149,8 @@ def _decode_frame_b64(s: str) -> np.ndarray:
         raise ValueError("frame decode failed")
     return img
 
-
+# Map human-readable failure explanations into a smaller set of stable
+# reason codes suitable for API responses, dashboards, and later audit.
 def _reason_code(why: str) -> str:
     """
     Lightweight mapping from human-readable `why` to a stable reason_code.
@@ -194,7 +175,8 @@ def _reason_code(why: str) -> str:
         return "PROMPT_BLINK_FAIL"
     return "FAIL_OTHER"
 
-
+# Identify response codes for which a new capture attempt is a reasonable
+# remediation path for the caller.
 def _retryable(code: str) -> bool:
     """
     Retryable means "user can fix by re-capturing a better clip".
@@ -207,7 +189,9 @@ def _retryable(code: str) -> bool:
         "FACE_COUNT_FAIL",
     }
 
-
+# Build the canonical API response object returned by the service,
+# combining the binary decision, stable reason coding, retryability, the
+# active policy hash, and numeric diagnostic metrics.
 def _make_response(ok: bool, why: str, metrics: Dict[str, float]) -> Dict:
     code = _reason_code(why)
     return {
@@ -259,12 +243,13 @@ class LivenessResponse(BaseModel):
 # -----------------------------
 app = FastAPI(title="LVS", version="3.1-fixed5")
 
-
+# Return a minimal health response together with the current election and
+# policy-hash identifiers.
 @app.get("/v1/health")
 def health():
     return {"status": "ok", "election_id": ELECTION_ID, "policy_hash_sha256": _POLICY_HASH}
 
-
+# Return the active policy object and its hash for authenticated callers.
 @app.get("/v1/policy")
 def policy(req: Request):
     _auth_or_403(req)
@@ -274,7 +259,9 @@ def policy(req: Request):
         "policy_hash_sha256": _POLICY_HASH,
     }
 
-
+# Evaluate liveness from a sequence of base64-encoded frames supplied in
+# the request body, then return the standardised decision and metrics
+# response.
 @app.post("/v1/liveness", response_model=LivenessResponse)
 def liveness(req: Request, body: LivenessRequest):
     _auth_or_403(req)
@@ -312,7 +299,8 @@ def liveness(req: Request, body: LivenessRequest):
 
     return _make_response(bool(out["ok"]), str(out["why"]), metrics)
 
-
+# Convenience endpoint for local testing that loads frames from an MP4 clip
+# on disk before invoking the same liveness core used by the normal API.
 @app.post("/v1/liveness/check_clip", response_model=LivenessResponse)
 def liveness_check_clip(req: Request, body: ClipRequest):
     """
@@ -347,6 +335,7 @@ def liveness_check_clip(req: Request, body: ClipRequest):
     return _make_response(bool(out["ok"]), str(out["why"]), dict(out.get("metrics") or {}))
 
 
-# pytest helper
+# Test helper that exposes the lazily initialised shared context to the
+# regression suite.
 def _get_ctx_for_tests() -> core.LivenessContext:
     return _ensure_ctx()
