@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Two‑phase Triton + FAISS validation
+This script performs a two-phase validation of a Triton-plus-FAISS face
+matching pipeline. In the first phase, it traverses a directory of
+identity-organised images, computes one embedding per image through
+Triton, and submits each embedding to the FAISS service so that the
+index is populated. In the second phase, it queries the FAISS service
+again with the same embeddings and checks whether each vector retrieves
+itself as the nearest neighbour within a predefined acceptance threshold.
 
-PHASE 1 (INGEST):   Walk a root folder of person-subfolders, embed every image
-                    with Triton, and add each embedding to FAISS.
-PAUSE:              Wait for a console keypress so you can inspect FAISS logs/metrics.
-PHASE 2 (VERIFY):   For each embedding, call FAISS /search again and check that
-                    the nearest neighbor is itself with distance < threshold.
-
-Assumptions:
-- FAISS microservice exposes POST /search that *searches and then adds* the
-  provided vector into the index (idempotency/duplicates handled by service).
-- Triton model takes FP32 NCHW [1,3,112,112] and returns a single embedding
-  tensor named "683". Adjust MODEL/INPUT/OUTPUT constants if different.
+The script is intended as a functional and consistency check for the
+combined embedding-and-search workflow rather than as a full benchmark
+or production verification service. Its main value is diagnostic: it
+confirms that preprocessing, embedding generation, FAISS insertion,
+response parsing, and threshold-based self-match validation are all
+aligned with the assumptions of the larger system.
 """
 
 import os
@@ -36,9 +37,8 @@ INPUT_NAME  = "input.1"
 OUTPUT_NAME = "683"                 # embedding tensor name
 IMAGE_SIZE  = (112, 112)            # width, height expected by the model
 
-# Match acceptance threshold for verification
-# Match acceptance threshold for verification
-# (FAISS IndexFlatL2 returns **squared L2**, so use τ² from calibration)
+# FAISS IndexFlatL2 reports squared L2 distance, so the operational
+# threshold must also be expressed in squared form.
 TAU_L2 = 1.150
 DISTANCE_THRESHOLD = TAU_L2 * TAU_L2   # 1.322
 
@@ -46,6 +46,12 @@ DISTANCE_THRESHOLD = TAU_L2 * TAU_L2   # 1.322
 HTTP_TIMEOUT = 30
 
 # ───────────────────── IMAGE/TRITON HELPERS ───────────────────── #
+# Read one image from disk and convert it into the tensor layout expected
+# by the Triton-served face model. The function loads the image with
+# OpenCV, rescales pixel values to floating-point form, resizes it to the
+# configured model input size, and converts the layout from HWC to CHW.
+# This keeps model-facing preprocessing explicit and consistent across the
+# ingest and verification phases.
 def preprocess(image_path: str) -> np.ndarray:
     """
     Load an image and convert to model's expected format.
@@ -59,6 +65,13 @@ def preprocess(image_path: str) -> np.ndarray:
     # Convert HWC -> CHW (channels first) as most ONNX face models expect NCHW
     return img.transpose(2, 0, 1)
 
+
+# Submit one preprocessed image tensor to Triton and return the resulting
+# one-dimensional embedding vector. A batch dimension is added because the
+# deployed model expects batched input, even for single-image inference.
+# The returned embedding is L2-normalised before use so that downstream
+# distance comparisons remain consistent with the geometry typically
+# assumed by InsightFace-style representations.
 def get_embedding(triton_client: InferenceServerClient, chw_img: np.ndarray) -> np.ndarray:
     """
     Send one preprocessed image (CHW) to Triton and return the 1-D embedding.
@@ -77,11 +90,17 @@ def get_embedding(triton_client: InferenceServerClient, chw_img: np.ndarray) -> 
         outputs=[infer_output]
     )
     vec = result.as_numpy(OUTPUT_NAME)[0].astype(np.float32)
-    # NEW: unit-normalize the embedding (ArcFace/InsightFace geometry)
+    # L2-normalise the embedding so that similarity behaviour remains
+    # consistent with the model's intended representation space.
     vec = vec / (np.linalg.norm(vec) + 1e-8)
     return vec
 
 # ───────────────────────── FAISS HELPERS ───────────────────────── #
+# Submit one embedding to the FAISS service during the ingest phase. Under
+# the service contract assumed here, the /search endpoint both performs a
+# lookup and inserts the supplied vector into the index. This function is
+# therefore used as an index-population step, while any returned search
+# information is treated as incidental rather than analytically important.
 def faiss_add(voter_id: int, embedding: np.ndarray):
     """
     Phase 1 "add" call.
@@ -93,6 +112,12 @@ def faiss_add(voter_id: int, embedding: np.ndarray):
     r.raise_for_status()
     return r.json()  # returned in case you want to inspect/log
 
+# Submit one embedding to the FAISS service during the verification phase
+# and extract the nearest-neighbour outcome from the response. The purpose
+# of this call is to test whether an embedding already inserted into the
+# index can retrieve itself as the closest match, subject to the chosen
+# acceptance threshold. The full raw response is also returned so that
+# unexpected service behaviour can be inspected if needed.
 def faiss_search_once(voter_id: int, embedding: np.ndarray):
     """
     Phase 2 "verify" call.
@@ -105,6 +130,12 @@ def faiss_search_once(voter_id: int, embedding: np.ndarray):
     nn_id, dist = extract_result(rsp)
     return nn_id, dist, rsp
 
+# Parse the nearest-neighbour identifier and distance value from the FAISS
+# service response. The function accepts several plausible response shapes
+# so that the validation script remains usable across small variations in
+# service implementation. If none of the expected patterns is present, it
+# raises an error immediately rather than silently accepting an ambiguous
+# or malformed response.
 def extract_result(rsp: dict):
     """
     Extract nearest-neighbor ID and distance from FAISS response.
@@ -119,6 +150,15 @@ def extract_result(rsp: dict):
     raise KeyError(f"Cannot extract id/distance from FAISS response: {rsp}")
 
 # ───────────────────────────── MAIN ───────────────────────────── #
+# Run the complete two-phase validation workflow. The function first
+# enumerates all images beneath the configured root directory, assigns a
+# deterministic integer identifier to each image, computes embeddings
+# through Triton, and inserts them into the FAISS-backed service. After a
+# deliberate pause for manual inspection of logs or service metrics, it
+# re-queries the service with the same embeddings and checks whether each
+# vector returns a self-match within the calibrated squared-L2 threshold.
+# The final summary reports how many embeddings passed or failed this
+# consistency check.
 def main():
     # ---------- Phase 0: enumerate all images under ROOT_DIR ----------
     image_paths = []
@@ -187,5 +227,6 @@ def main():
         for vid, found, dist in failed:
             print(f" - vid={vid}  got={found}  dist={dist}")
 
+# Standard script entry point for direct command-line execution.
 if __name__ == "__main__":
     main()
