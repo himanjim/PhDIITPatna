@@ -1,12 +1,8 @@
-"""
-faiss_bench.py
-──────────────
-Tiny FastAPI + Faiss micro-service for benchmark runs only.
-
-• Builds a 1 000 000-vector Flat index (FP-16) directly on GPU each start-up
-• Optional async batched inserts (disable with ENABLE_UPDATES=0)
-• Never touches disk: no snapshots, no restores, no reserve() call
-"""
+# This module provides a benchmark-oriented FAISS HTTP service backed by a
+# GPU FlatL2 index. It is intended for throughput and latency experiments
+# rather than for production deployment. The service supports single-query
+# and batch-query search and can optionally enqueue updates so that index
+# growth can be incorporated into benchmark scenarios.
 
 from __future__ import annotations
 import os, asyncio
@@ -27,6 +23,9 @@ BATCH_UPDATE_MS   = int(os.getenv("BATCH_UPDATE_MS", 100))
 K_NEIGHBOURS      = 1
 
 # ───────────── Build GPU index once per run ───────────── #
+# Build the benchmark FAISS index once at startup by generating synthetic
+# vectors directly in memory and inserting them into a GPU-backed FlatL2
+# index with explicit integer identifiers.
 def build_index() -> faiss.IndexIDMap2:
     res = faiss.StandardGpuResources()
     cfg = faiss.GpuIndexFlatConfig()
@@ -44,10 +43,14 @@ def build_index() -> faiss.IndexIDMap2:
     return idx
 
 # ───────────── FastAPI models ───────────── #
+# Request model for a single search query consisting of one voter
+# identifier and one embedding vector.
 class QueryVector(BaseModel):
     voter_id: int
     vector:   List[float]
 
+# Request model for batch search, pairing one identifier with each query
+# vector.
 class QueryBatch(BaseModel):
     voter_ids: List[int]
     vectors:   List[List[float]]
@@ -57,10 +60,13 @@ app = FastAPI()
 faiss_index = build_index()
 update_q: asyncio.Queue[tuple[np.ndarray, int]] = asyncio.Queue()
 
-# warm CUDA kernels
+# Issue one trivial search so that CUDA kernels and related resources are
+# initialised before the first benchmarked request.
 _ = faiss_index.search(np.zeros((1, EMB_DIM), dtype="float32"), 1)
 
 # ───── Background flusher (only if updates enabled) ───── #
+# Flush queued update requests into the FAISS index in bounded batches so
+# that repeated per-request insertion does not dominate the search path.
 async def flush_updates():
     while True:
         await asyncio.sleep(BATCH_UPDATE_MS / 1000)
@@ -73,12 +79,15 @@ async def flush_updates():
             faiss_index.add_with_ids(np.vstack(vecs).astype("float32"),
                                      np.asarray(ids, dtype="int64"))
 
+# Start the background update flusher when update support is enabled.
 @app.on_event("startup")
 async def _startup():
     if ENABLE_UPDATES:
         asyncio.create_task(flush_updates())
 
 # ───────────── Endpoints ───────────── #
+# Execute one nearest-neighbour search and, when enabled, enqueue the
+# submitted vector for later batched insertion.
 @app.post("/search")
 async def search(q: QueryVector):
     if len(q.vector) != EMB_DIM:
@@ -112,7 +121,8 @@ async def search(q: QueryVector):
         "faiss_index_update_time_ms": round(update_time_ms, 3)
     }
 
-
+# Execute one batch nearest-neighbour search and optionally enqueue the
+# submitted vectors for later batched insertion.
 @app.post("/search_batch")
 async def search_batch(b: QueryBatch):
     if len(b.vectors) != len(b.voter_ids):
@@ -129,6 +139,7 @@ async def search_batch(b: QueryBatch):
     "distance_l2": float(float(d[0]) ** 0.5)}
             for vid, i, d in zip(b.voter_ids, I, D)]
 
+# Return a minimal liveness and index-size check for benchmark harnesses.
 @app.get("/ping")
 async def ping():
     return {"status": "ok", "ntotal": faiss_index.ntotal}
