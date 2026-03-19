@@ -1,9 +1,22 @@
+"""
+Generate a compact Uttar Pradesh booth preload file for booth_pdc ingestion.
+
+The script produces one CSV row per booth across all constituencies in the state.
+Booth identifiers, officer anchors, and polling windows are derived
+deterministically from the configured election parameters, while device
+fingerprints are intentionally randomised to mimic deployment diversity. The
+resulting file is suitable for preload and scale testing, not for real election
+operations.
+"""
 #!/usr/bin/env python3
 # booth_pdc_compact_up.py
 import csv, hashlib, secrets
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+# Generation parameters for the synthetic booth dataset. These values control the
+# state scope, constituency count, polling-day window, closure ratio, and output
+# path used for the compact CSV fixture.
 # ===== CONFIG =====
 STATE_CODE = "UP"
 NUM_CONSTITUENCIES = 80             # C-001 .. C-080 (even split)
@@ -27,22 +40,50 @@ assert TOTAL_BOOTHS % NUM_CONSTITUENCIES == 0, "170000 must split evenly across 
 PER_CON = TOTAL_BOOTHS // NUM_CONSTITUENCIES  # 2125 booths per constituency
 
 def booth_anchor_hex(sc: str, cid: str, bid: str, nhex: int = 24) -> str:
-    """24-hex pseudonymous anchor (like voter_id_star length)"""
+    """
+    Derive a stable pseudonymous anchor for a booth-scoped entity.
+
+    The value is used here as a compact deterministic identifier rather than as a
+    cryptographic protection mechanism. Its role is to give each booth a stable
+    officer-style anchor that can be regenerated across repeated runs.
+    """
     h = hashlib.sha1(f"{sc}|{cid}|{bid}".encode()).hexdigest()
     return h[:nhex]
 
 def officer_id_star(sc: str, cid: str, bid: str) -> str:
+    """
+    Return the pseudonymous officer identifier associated with one booth record.
+
+    In this fixture generator, the officer anchor is deterministically tied to the
+    booth rather than to a separately modelled personnel roster.
+    """
     return booth_anchor_hex(sc, cid, bid, 24)
 
 def short_fpr_hex(bytes_len: int = 16) -> str:
-    """Compact fingerprint (hex)"""
+    """
+    Return a random hexadecimal device fingerprint of the requested byte length.
+
+    This field is intentionally non-deterministic so that the generated booth file
+    does not unrealistically reuse the same device fingerprint across all booths.
+    """
     return secrets.token_hex(bytes_len)
 
 def device_id(cid: str, bid: str, idx: int) -> str:
+    """
+    Construct a compact synthetic device identifier from constituency, booth, and
+    running index values.
+
+    The identifier is formatted for readability and bulk generation rather than to
+    emulate any specific production device-naming standard.
+    """
     return f"D{cid[2:]}{bid[2:]}{idx%1000:03d}"  # e.g., DC001B0001007
 
+# Compact column order for the generated preload CSV. The abbreviated headings are
+# chosen to reduce file size during large-scale fixture generation.
 headers = ["sc","cid","bid","st","o","c","oid","r","did","f"]
 
+# Write one row per booth, distributing booths evenly across constituencies and
+# marking a small configurable fraction as closed when CLOSED_RATIO is non-zero.
 OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
 with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
