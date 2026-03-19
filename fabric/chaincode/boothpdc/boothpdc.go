@@ -1,3 +1,12 @@
+// boothpdc.go implements a compact registry for polling-booth and polling-device
+// metadata stored in the booth_pdc private data collection.
+//
+// The contract is intentionally narrow. It supports bulk preload of booth records,
+// existence checks via private-data hashes, and full reads for authorised peers.
+// The stored record binds booth identity, operating window, officer assignment,
+// and device fingerprinting fields that are later used by the voting contract for
+// booth- and device-level validation during tally or audit.
+
 package main
 
 import (
@@ -10,6 +19,10 @@ import (
 
 const boothColl = "booth_pdc"
 
+// BoothRecord is the canonical private record for one polling booth within one
+// constituency. It combines operational status, polling window, officer metadata,
+// and device linkage fields so that downstream contracts can validate whether a
+// ballot was cast from an authorised booth-device context.
 type BoothRecord struct {
   StateCode            string `json:"state_code"`
   ConstituencyID       string `json:"constituency_id"`
@@ -25,11 +38,20 @@ type BoothRecord struct {
 
 type SmartContract struct{ contractapi.Contract }
 
+// keyBooth constructs the deterministic private-data key for one booth record.
+// The key is namespaced by state, constituency, and booth so that the same booth
+// identifier can be reused safely across different jurisdictions.
 func keyBooth(sc, cid, bid string) string {
   return "BOOTH::" + sc + "::" + cid + "::" + bid
 }
 
-// PutBoothChunk writes an array of BoothRecord into PDC via transient["entries"] = base64(JSON array)
+// PutBoothChunk bulk-loads booth records into booth_pdc from transient input.
+//
+// The caller supplies stateCode and constituencyID as method arguments and passes
+// the record array in transient["entries"] as raw JSON bytes. For each record, the
+// method fills missing state or constituency values from the method arguments,
+// normalises booth status, rejects cross-constituency mismatches, and then writes
+// the resulting record to private data under a deterministic composite key.
 func (s *SmartContract) PutBoothChunk(ctx contractapi.TransactionContextInterface, stateCode, constituencyID string) error {
   if stateCode == "" || constituencyID == "" { return errors.New("state_code and constituency_id are required") }
   tm, err := ctx.GetStub().GetTransient(); if err != nil { return fmt.Errorf("get transient: %w", err) }
@@ -55,12 +77,21 @@ func (s *SmartContract) PutBoothChunk(ctx contractapi.TransactionContextInterfac
   return nil
 }
 
+// HasBooth performs an existence check without reading the private booth value.
+//
+// It relies on GetPrivateDataHash so that a peer can confirm whether a booth entry
+// is present in booth_pdc while avoiding disclosure of the stored booth record.
 func (s *SmartContract) HasBooth(ctx contractapi.TransactionContextInterface, stateCode, constituencyID, boothID string) (bool, error) {
   h, err := ctx.GetStub().GetPrivateDataHash(boothColl, keyBooth(stateCode, constituencyID, boothID))
   if err != nil { return false, err }
   return len(h) > 0, nil
 }
 
+// GetBooth returns the full private booth record for an authorised caller.
+//
+// This method is intended for administrative validation and audit workflows that
+// need the stored booth metadata itself, rather than only proof that a record
+// exists.
 func (s *SmartContract) GetBooth(ctx contractapi.TransactionContextInterface, stateCode, constituencyID, boothID string) (string, error) {
   val, err := ctx.GetStub().GetPrivateData(boothColl, keyBooth(stateCode, constituencyID, boothID))
   if err != nil { return "", err }
@@ -68,6 +99,7 @@ func (s *SmartContract) GetBooth(ctx contractapi.TransactionContextInterface, st
   return string(val), nil
 }
 
+// main registers and starts the booth metadata chaincode.
 func main() {
   cc, err := contractapi.NewChaincode(new(SmartContract)); if err != nil { panic(err) }
   if err := cc.Start(); err != nil { panic(err) }
