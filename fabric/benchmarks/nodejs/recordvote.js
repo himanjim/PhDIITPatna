@@ -1,3 +1,12 @@
+/**
+ * Caliper workload module for exercising the RecordVote transaction. Each
+ * worker loads voter, candidate, and booth records from CSV files,
+ * samples one tuple per transaction, maps the selected fields into the
+ * chaincode argument order, and submits the resulting invoke request
+ * through the Caliper system-under-test adapter. The module is intended
+ * for scalable synthetic voting benchmarks rather than deterministic
+ * replay of a fixed vote script.
+ */
 'use strict';
 
 const { WorkloadModuleBase } = require('@hyperledger/caliper-core');
@@ -32,6 +41,9 @@ function loadCsv(filePath) {
     return records;
 }
 
+/**
+ * Caliper workload implementation for repeated RecordVote invocations.
+ */
 class RecordVoteWorkload extends WorkloadModuleBase {
 
     constructor() {
@@ -42,6 +54,11 @@ class RecordVoteWorkload extends WorkloadModuleBase {
         this.booths = [];
     }
 
+    /**
+     * Perform standard Caliper workload initialisation, load the CSV-based
+     * benchmark inputs once for this worker, and cache the configurable
+     * argument defaults used during transaction generation.
+     */
     async initializeWorkloadModule(workerIndex, totalWorkers, roundIndex, roundArguments, sutAdapter, sutContext) {
         await super.initializeWorkloadModule(workerIndex, totalWorkers, roundIndex, roundArguments, sutAdapter, sutContext);
 
@@ -74,11 +91,18 @@ class RecordVoteWorkload extends WorkloadModuleBase {
         this.defaultConst   = roundArguments.constituencyID || 'C-001';    // matches your CSV, not "CONST-001"
     }
 
+    /**
+     * Select one random row from an already loaded input table.
+     */
     pickRandom(arr) {
         const idx = Math.floor(Math.random() * arr.length);
         return arr[idx];
     }
 
+    /**
+     * Construct one RecordVote request from randomly selected CSV rows and
+     * submit it through the Caliper adapter as a write transaction.
+     */
     async submitTransaction() {
         const seq = this.txIndex++;
 
@@ -151,11 +175,17 @@ class RecordVoteWorkload extends WorkloadModuleBase {
         await this.sutAdapter.sendRequests(request);
     }
 
+    /**
+     * No workload-specific cleanup is required for this module.
+     */
     async cleanupWorkloadModule() {
-        // nothing to do
+    
     }
 }
 
+/**
+ * Caliper entry point for constructing one workload instance per worker.
+ */
 function createWorkloadModule() {
     return new RecordVoteWorkload();
 }
