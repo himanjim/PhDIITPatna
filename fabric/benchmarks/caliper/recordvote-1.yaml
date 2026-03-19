@@ -1,9 +1,14 @@
+# Single-transaction Caliper smoke test for the RecordVote path. This
+# configuration is intended to confirm that the workload module, CSV input
+# files, contract arguments, and gateway connectivity are all functioning
+# correctly before larger benchmark runs are attempted.
 test:
   name: "accumvote-recordvote-1"
   description: "Single RecordVote smoke test"
   workers:
     number: 1
-
+  # Execute exactly one RecordVote invocation so that functional correctness
+  # can be checked without introducing load-related effects.
   rounds:
     - label: recordvote_1
       description: "Exactly one RecordVote transaction"
