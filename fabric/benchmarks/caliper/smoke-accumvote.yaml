@@ -1,4 +1,7 @@
-# benchmarks/smoke-accumvote.yaml
+# Short Caliper smoke configuration for repeated read-only evaluation of
+# the accumvote contract. The intent is to verify end-to-end connectivity
+# and request flow with a harmless query before running more demanding
+# workloads.
 test:
   name: "accumvote-smoke"
   description: "Smoke test: Caliper -> Fabric Gateway -> accumvote.GetParams"
