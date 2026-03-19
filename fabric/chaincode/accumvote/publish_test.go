@@ -1,21 +1,9 @@
-// Publish_test.go
-//
-// Purpose: End-to-end and integration-style tests for the AccumVote contract’s
-// Publishing/tally flow. These tests exercise: Paillier Enc(1) combine,
-// Re-vote “latest wins”, voter eligibility via cc2cc, booth/device/time
-// Validation, public result anchoring, and receipt verification.
-// Role: Runs against a lightweight harness (mocked ChaincodeStub + in-memory
-// WS/PDC) to validate the contract’s behavior without a real Fabric network.
-// Key dependencies:
-// - Contract under test: AccumVoteContract (same package)
-// - Test harness: newHarness, memWorld, fakes.MockChaincodeStubInterface
-// - Fabric protos (peer/msp/queryresult) and chaincode-go shim/contractapi
-// - gomock for stubbing cc2cc and ledger calls
-// - Crypto: small Paillier helpers (for tests only), HMAC-SHA256, SHA256
-//
-// Notes:
-// - All helpers are intentionally tiny and deterministic.
-// - No production crypto here—Paillier bits are minimal and for testing only.
+// This file contains end-to-end and integration-style tests for the
+// publication phase of the AccumVote flow. The tests cover encrypted tally
+// preparation, trustee-side decryption consistency, latest-vote-wins
+// behaviour across re-votes, result anchoring, receipt verification, and
+// the linkage between on-chain ballot metadata and test-only receipt or
+// QR-style artefacts.
 
 package main
 
@@ -34,7 +22,8 @@ import (
 	"encoding/base64"
 )
 
-// Cast holds one synthetic vote used by tests.
+// cast holds one synthetic vote description used to drive multi-step
+// publication and receipt-verification scenarios.
 type cast struct {
     serial string
     cand   string
@@ -48,14 +37,15 @@ type cast struct {
 
 // -------------------- Minimal Paillier helpers for tests --------------------
 
-// PaillierTestKey is a toy keypair with just enough fields for unit tests.
+// paillierTestKey is a deliberately small Paillier test key carrying only
+// the parameters needed to generate Enc(1) values and decrypt toy tally
+// results inside the test suite.
 type paillierTestKey struct {
 	n, n2, lambda, mu *big.Int
 }
 
-// NewPaillierTestKey builds a tiny (insecure) Paillier key from two primes.
-// Params: p, q – small primes for test use.
-// Returns: *paillierTestKey with n, n², lambda (lcm(p−1,q−1)), and mu precomputed.
+// Build a small Paillier test keypair from two toy primes so that tally
+// outputs can be checked against known plaintext counts.
 func newPaillierTestKey(p, q int64) *paillierTestKey {
 	P := big.NewInt(p)
 	Q := big.NewInt(q)
@@ -77,9 +67,7 @@ func newPaillierTestKey(p, q int64) *paillierTestKey {
 	return &paillierTestKey{n: n, n2: n2, lambda: lambda, mu: mu}
 }
 
-// EncOneHex returns Enc(1; r) = (n+1) * r^n mod n^2 as lowercase hex (no 0x).
-// Params: r – randomizer as int64.
-// Returns: hex string of ciphertext.
+// Return a hexadecimal Enc(1; r) value for the toy Paillier key.
 func (k *paillierTestKey) encOneHex(r int64) string {
 	R := big.NewInt(r)
 	g := new(big.Int).Add(k.n, big.NewInt(1)) // Standard g = n+1
@@ -89,10 +77,8 @@ func (k *paillierTestKey) encOneHex(r int64) string {
 	return fmt.Sprintf("%x", c)
 }
 
-// DecCountT decrypts a ciphertext and returns the integer count.
-// Accepts hex/0x/decimal via bigFromPossiblyHex (provided by another test file).
-// Params: t (testing helper), cStr (ciphertext string).
-// Returns: *big.Int plaintext in Z_n.
+// Decrypt a ciphertext string and return the resulting plaintext count,
+/// failing the test if parsing fails.
 func (k *paillierTestKey) decCountT(t *testing.T, cStr string) *big.Int {
 	t.Helper()
 	c, err := bigFromPossiblyHex(cStr) // Helper from tally_test.go
@@ -107,9 +93,8 @@ func (k *paillierTestKey) decCountT(t *testing.T, cStr string) *big.Int {
 
 // ------------------------------ Test utilities ------------------------------
 
-// SetPK_Custom sets a public key on-ledger with g=n+1 for the test state.
-// Params: t (testing helper), h (harness), n (modulus).
-// Returns: none; fails the test on error.
+// Write a deterministic test public key to ledger state using g=n+1 so
+// that subsequent tally operations run against a known modulus.
 func setPK_Custom(t *testing.T, h *testHarness, n *big.Int) {
 	t.Helper()
 	g := new(big.Int).Add(n, big.NewInt(1))
@@ -117,9 +102,8 @@ func setPK_Custom(t *testing.T, h *testHarness, n *big.Int) {
 	requireNoErr(t, h.cc.SetJointPublicKey(h.ctx, testStateUP, pkJSON))
 }
 
-// FetchPublishedAnchor loads the stored TallyResultAnchor for (constituencyID, roundID).
-// Params: t, h, constituencyID, roundID.
-// Returns: parsed TallyResultAnchor; fails the test if missing or malformed.
+// Load and parse the published result anchor for one constituency and
+// round from world state.
 func fetchPublishedAnchor(t *testing.T, h *testHarness, constituencyID, roundID string) TallyResultAnchor {
 	t.Helper()
 	key := fmt.Sprintf("%s%s::%s", keyResultsPrefix, constituencyID, roundID)
@@ -134,9 +118,8 @@ func fetchPublishedAnchor(t *testing.T, h *testHarness, constituencyID, roundID 
 	return anchor
 }
 
-// ToJSON marshals any value to a JSON string and fails the test on error.
-// Params: t, v.
-// Returns: JSON string.
+// Marshal one Go value to a JSON string and fail the test if encoding
+// fails.
 func toJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -144,9 +127,8 @@ func toJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// MakeEmbedding creates a synthetic 512-D float embedding with small integer pattern.
-// Params: seed – shifts the pattern.
-// Returns: []float32 of length 512.
+// Create a deterministic synthetic embedding vector for test-only receipt
+// and biometric-linkage scenarios.
 func makeEmbedding(seed int) []float32 {
 	emb := make([]float32, 512)
 	for i := range emb {
@@ -156,9 +138,8 @@ func makeEmbedding(seed int) []float32 {
 	return emb
 }
 
-// QuantizeEmbeddingToU8 clamps an embedding to [-1,1] and quantizes to uint8.
-// Params: emb []float32.
-// Returns: []byte of same length in [0,255].
+// Quantise a float embedding into a byte vector using a fixed clamp and
+// linear mapping so that downstream HMAC or encryption tests are stable.
 func quantizeEmbeddingToU8(emb []float32) []byte {
 	q := make([]byte, len(emb))
 	for i, v := range emb {
@@ -182,9 +163,8 @@ func makeBioCipherB64(qbytes []byte) string {
 	return base64.StdEncoding.EncodeToString(buf)
 }
 
-// ComputeBioTagHex builds HMAC-SHA256 over qbytes|serial|txID|const and returns hex.
-// Params: qbytes, serial, txID, constituency, ktag (HMAC key).
-// Returns: lowercase hex string of tag.
+// Compute the deterministic HMAC-based biometric linkage tag used by the
+// tests to verify storage and audit consistency.
 func computeBioTagHex(qbytes []byte, serial, txID, constituency string, ktag []byte) string {
 	mac := hmac.New(sha256.New, ktag)
 	mac.Write(qbytes)
@@ -731,9 +711,8 @@ func Test_EndToEnd_InvalidVoter_Excluded_And_BioTag_Linkage(t *testing.T) {
 
 /* test-only helpers (place in the same _test.go file) */
 
-// DummyEmbed512 returns a deterministic 512-byte vector (not real biometrics).
-// Params: none.
-// Returns: []byte length 512.
+// Return a deterministic 512-byte pseudo-embedding for stable linkage
+// tests.
 func dummyEmbed512() []byte {
     // Deterministic 512-byte vector so the HMAC is stable across runs
     b := make([]byte, 512)
@@ -741,9 +720,8 @@ func dummyEmbed512() []byte {
     return b
 }
 
-// BioTagHexFor computes base64(HMAC-SHA256(Ktag, embed|serial|txID|const)).
-// Params: Ktag key, embed bytes, serial, txID, constituency.
-// Returns: base64 string of tag.
+// Compute the base64-encoded HMAC tag used by the end-to-end invalid-voter
+// linkage tests.
 func bioTagHexFor(Ktag, embed []byte, serial, txID, constituency string) string {
     // HMAC-SHA256(Ktag, embed || "|" || serial || "|" || txID || "|" || constituency)
     mac := sha256.New
@@ -878,6 +856,8 @@ type sealedQREnvelope struct {
 	Sealed string `json:"sealed"`
 }
 
+// Seal a candidate choice into an authenticated QR-style payload that is
+// cryptographically bound to the public receipt fields.
 func makeSealedQRPayload(t *testing.T, kioskKey []byte, txID, serial, hC, epoch, candidateID string) string {
 	t.Helper()
 
@@ -915,6 +895,8 @@ func makeSealedQRPayload(t *testing.T, kioskKey []byte, txID, serial, hC, epoch,
 	return string(b)
 }
 
+// Open and authenticate a sealed QR-style payload using the kiosk key and
+// return both the envelope and the recovered candidate choice.
 func kioskOpenSealedQRPayload(t *testing.T, kioskKey []byte, qrPayload string) (sealedQREnvelope, string) {
 	t.Helper()
 
@@ -950,6 +932,8 @@ func kioskOpenSealedQRPayload(t *testing.T, kioskKey []byte, qrPayload string) (
 	return env, string(pt)
 }
 
+// Open and authenticate a sealed QR-style payload using the kiosk key and
+// return both the envelope and the recovered candidate choice.
 func b64urlDecode(s string) ([]byte, error) {
 	return base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(s)
 }
