@@ -1,9 +1,16 @@
+# Stepped Caliper benchmark configuration for the RecordVote transaction.
+# The rounds increase both transaction count and target offered load so
+# that behaviour can be observed across progressively heavier voting
+# workloads while keeping the contract arguments and CSV-backed data
+# sources consistent.
 test:
   name: "accumvote-recordvote-steps"
   description: "RecordVote at increasing loads using CSV-backed voters/candidates/booths"
   workers:
     number: 4
-
+  # Progress from small functional-load rounds to larger throughput rounds
+  # in order to study how the RecordVote path behaves as offered load and
+  # campaign size increase.
   rounds:
     - label: recordvote_10
       description: "About 10 voters (CSV-backed)"
