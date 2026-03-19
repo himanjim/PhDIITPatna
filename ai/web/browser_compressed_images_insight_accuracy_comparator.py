@@ -1,6 +1,14 @@
-
 """
 BrowserCompressedImagesAccuracyComparator (InsightFace-only, Triton gRPC)
+This script evaluates how closely browser-compressed face images preserve
+identity information relative to the original images when embeddings are
+computed through Triton-served InsightFace inference. For each original
+image, the script compares its embedding against all compressed-image
+embeddings, selects the nearest compressed candidate by L2 distance, and
+then classifies the pair as a match or non-match using a fixed threshold.
+The resulting outcomes are summarised through standard verification
+metrics, a confusion matrix, and lists of representative false positives
+and false negatives.
 -------------------------------------------------------------------------
 Nearest-neighbor evaluation (simple & practical)
 
@@ -66,6 +74,8 @@ if not LOG.handlers:
 # ==============================
 #         Configuration
 # ==============================
+# Resolve the user's Downloads directory so that default input folders can
+# be derived without hard-coding a machine-specific absolute path.
 def get_downloads_path() -> Path:
     if "USERPROFILE" in os.environ:
         return Path(os.path.join(os.environ["USERPROFILE"], "Downloads"))
@@ -78,7 +88,7 @@ DEFAULT_DOWNLOADS = get_downloads_path()
 DEFAULT_ORIG_DIR = os.environ.get("ORIG_DIR", str(DEFAULT_DOWNLOADS / "voter_images_faces"))
 DEFAULT_COMP_DIR = os.environ.get("COMP_DIR", str(DEFAULT_DOWNLOADS / "voter_images_faces_compressed"))
 
-# Triton (aligned with locust_benchmark.py)
+# Triton inference configuration for the InsightFace embedding model.
 TRITON_URL  = os.environ.get("TRITON_URL", "localhost:8001")
 MODEL_NAME  = os.environ.get("MODEL_NAME", "buffalo_l")
 IN_TENSOR   = os.environ.get("IN_TENSOR", "input.1")
@@ -92,6 +102,8 @@ DEFAULT_L2_THRESHOLD = float(os.environ.get("L2_THRESHOLD", "1.15"))
 # ==============================
 #       Helper Functions
 # ==============================
+# Collect all supported image files from the specified folder in a stable
+# sorted order for reproducible evaluation.
 def collect_images(folder: str, exts=(".jpg", ".jpeg", ".png", ".bmp", ".webp")) -> List[str]:
     if not os.path.isdir(folder):
         LOG.error("Folder not found: %s", folder)
@@ -103,7 +115,9 @@ def collect_images(folder: str, exts=(".jpg", ".jpeg", ".png", ".bmp", ".webp"))
             files.append(p)
     return files
 
-
+# Derive a simple identity label from the leading alphabetic portion of
+# the filename so that original and compressed images can be compared at
+# the person level.
 def extract_identity(filename: str) -> str:
     """
     Example: "Ravi_001.png" -> "Ravi"
@@ -113,7 +127,8 @@ def extract_identity(filename: str) -> str:
     m = re.match(r"^([A-Za-z]+)", basename)
     return m.group(1) if m else basename
 
-
+# Load one image from disk and convert it into the CHW float32 tensor
+# format expected by the Triton-served InsightFace model.
 def preprocess_image(path: str) -> np.ndarray:
     """
     cv2.imread -> float32/255 -> resize to 112x112 -> CHW -> NCHW
@@ -127,7 +142,8 @@ def preprocess_image(path: str) -> np.ndarray:
     img = np.expand_dims(img, 0)  # [1,3,112,112]
     return img
 
-
+# Project embeddings onto the unit sphere so that subsequent L2 distance
+# comparisons are made in the normalised embedding space.
 def l2_normalize(vecs: np.ndarray, axis: int = 1, eps: float = 1e-12) -> np.ndarray:
     arr = np.asarray(vecs, dtype=np.float32)
     if arr.ndim == 1:
@@ -136,7 +152,9 @@ def l2_normalize(vecs: np.ndarray, axis: int = 1, eps: float = 1e-12) -> np.ndar
     norms = np.linalg.norm(arr, axis=axis, keepdims=True) + eps
     return arr / norms
 
-
+# Submit one image batch to Triton and return the resulting embedding
+# matrix, handling client-library variants that differ in binary-data
+# argument support.
 def triton_embed(client: InferenceServerClient, batch: np.ndarray) -> np.ndarray:
     """
     Sends a batch [N,3,112,112] FP32 to Triton and returns embeddings [N, D].
@@ -159,7 +177,8 @@ def triton_embed(client: InferenceServerClient, batch: np.ndarray) -> np.ndarray
         raise RuntimeError("Triton response has no output tensor")
     return emb.astype(np.float32)
 
-
+# Embed a list of image paths in mini-batches through Triton and return
+# the full L2-normalised embedding matrix.
 def embed_all(paths: List[str], client: InferenceServerClient, batch_size: int = 32) -> np.ndarray:
     """
     Efficiently embed a list of image paths using mini-batches.
@@ -194,6 +213,10 @@ def embed_all(paths: List[str], client: InferenceServerClient, batch_size: int =
 # ==============================
 #            Main
 # ==============================
+# Run the complete nearest-neighbour comparison workflow: collect images,
+# compute Triton embeddings for originals and compressed variants, match
+# each original to its nearest compressed image, apply the decision
+# threshold, and report the resulting verification metrics.
 def main():
     ap = argparse.ArgumentParser(description="Nearest-neighbor accuracy check for original vs compressed faces using Triton (InsightFace).")
     ap.add_argument("--orig", default=DEFAULT_ORIG_DIR, help="Original faces folder")
