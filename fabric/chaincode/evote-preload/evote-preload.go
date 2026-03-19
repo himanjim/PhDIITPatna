@@ -1,25 +1,17 @@
-package main
-
 /*
-evote-preload (bootstrap/minimal)
+evote-preload.go provides the preload and lookup contract used to seed election
+reference data before voting begins.
 
-Exports (for admin/preload & verification only):
-  1) UpsertCandidates(constituencyID, candidatesJSON)
-       PUBLIC state:
-         CAND::<constituencyID>::<candidateID>     → full Candidate JSON
-         CANDIDX::<constituencyID>::<candidateID>  → "1"
-         CANDLIST::<constituencyID>                → ["cand-000001", ...] (sorted)
-     - Idempotent and *prunes* stale entries that are no longer present.
-
-  2) PutVoterRollChunk(stateCode, constituencyID, entriesJSON_or_empty)
-       PRIVATE DATA COLLECTION "voter_roll_pdc"
-       • Preferred: pass entries via transient map key "entries" (JSON array bytes)
-       • Fallback: if transient missing, uses the third arg (for quick tests)
-       entries := [{"voter_id_star":"...", "status":"eligible"}, ...]
-
-  3) GetCandidateList(constituencyID) → JSON list of candidate IDs
-  4) HasVoter(constituencyID, voter_id_star) → "true"/"false" (via GetPrivateDataHash)
+The contract has two distinct responsibilities. First, it maintains the public
+candidate catalogue for each constituency, including a sorted constituency-level
+candidate list used by downstream tally logic. Second, it stores presence-only
+voter-roll entries in the voter_roll_pdc private data collection, allowing other
+contracts to verify whether a pseudonymous voter identifier exists without
+revealing the underlying private value. The design is intentionally minimal and
+supports both bulk administrative preload and read-only cross-chaincode queries.
 */
+
+package main
 
 import (
 	"encoding/json"
@@ -42,7 +34,9 @@ func voterKey(constituencyID, voterStar string) string     { return "VOTER::" + 
 // -----------------------------------------------------------------------------
 // Models
 // -----------------------------------------------------------------------------
-
+// Candidate is the public reference record for one contesting candidate in one
+// constituency. The structure is stored in world state and is intended to remain
+// free of any voter-linked information.
 type Candidate struct {
 	CandidateID   string `json:"candidate_id"`
 	CandidateName string `json:"candidate_name"`
@@ -50,6 +44,9 @@ type Candidate struct {
 	SymbolHash    string `json:"symbol_hash"`
 }
 
+// VoterPresence stores only presence and status information for a pseudonymous
+// voter identifier. It is deliberately minimal so that eligibility lookups can be
+// performed without exposing richer electoral-roll attributes on-chain.
 type VoterPresence struct {
 	Status       string `json:"status"`
 	StateCode    string `json:"state_code"`
@@ -64,8 +61,13 @@ type Contract struct {
 	contractapi.Contract
 }
 
-// UpsertCandidates loads/updates the candidate catalogue for a constituency.
-// It is idempotent and also *removes* candidates that are no longer in the list.
+// UpsertCandidates replaces the effective candidate catalogue for one constituency.
+//
+// The method writes or updates each supplied candidate record, rebuilds the sorted
+// constituency candidate list, and removes stale candidate entries that were
+// present earlier but are absent from the new payload. It is therefore suitable
+// for repeated administrative preload runs and for controlled correction of the
+// candidate list before polling.
 func (c *Contract) UpsertCandidates(ctx contractapi.TransactionContextInterface, constituencyID string, candidatesJSON string) error {
 	constituencyID = strings.TrimSpace(constituencyID)
 	if constituencyID == "" {
@@ -129,8 +131,14 @@ func (c *Contract) UpsertCandidates(ctx contractapi.TransactionContextInterface,
 	return ctx.GetStub().PutState(candListKey(constituencyID), bList)
 }
 
-// PutVoterRollChunk stores presence-only voter records into the PDC.
-// Preferred input is transient map key "entries" (raw JSON array).
+// PutVoterRollChunk writes a batch of presence-only voter records into
+// voter_roll_pdc.
+//
+// The preferred input path is transient["entries"], which is expected to contain a
+// raw JSON array of voter objects. The method normalises the state and
+// constituency scope from the function arguments, assigns a default status of
+// "eligible" when no status is supplied, and stores each pseudonymous voter key as
+// a separate private-data entry.
 func (c *Contract) PutVoterRollChunk(ctx contractapi.TransactionContextInterface, stateCode, constituencyID, entriesJSON string) error {
 	stateCode = strings.TrimSpace(stateCode)
 	constituencyID = strings.TrimSpace(constituencyID)
@@ -179,7 +187,11 @@ func (c *Contract) PutVoterRollChunk(ctx contractapi.TransactionContextInterface
 	return nil
 }
 
-// GetCandidateList returns the sorted candidate IDs for a constituency.
+// GetCandidateList returns the stored constituency candidate list as JSON.
+//
+// The list is expected to be the sorted list produced by UpsertCandidates. When no
+// candidate list has been written for the constituency, the method returns an
+// empty JSON array rather than failing.
 func (c *Contract) GetCandidateList(ctx contractapi.TransactionContextInterface, constituencyID string) (string, error) {
 	constituencyID = strings.TrimSpace(constituencyID)
 	if constituencyID == "" {
@@ -195,8 +207,11 @@ func (c *Contract) GetCandidateList(ctx contractapi.TransactionContextInterface,
 	return string(b), nil
 }
 
-// HasVoter returns true if a (hashed/pseudonymous) voter key exists in the PDC.
-// Uses GetPrivateDataHash (works without exposing the private value).
+// HasVoter checks whether a pseudonymous voter identifier is present in
+// voter_roll_pdc for the given constituency.
+//
+// The method uses GetPrivateDataHash so that caller contracts can confirm roll
+// membership without reading the private voter-presence record itself.
 func (c *Contract) HasVoter(ctx contractapi.TransactionContextInterface, constituencyID, voterStar string) (bool, error) {
 	constituencyID = strings.TrimSpace(constituencyID)
 	voterStar = strings.TrimSpace(voterStar)
@@ -210,6 +225,7 @@ func (c *Contract) HasVoter(ctx contractapi.TransactionContextInterface, constit
 	return len(h) > 0, nil
 }
 
+// main registers and starts the preload chaincode.
 func main() {
 	cc, err := contractapi.NewChaincode(new(Contract))
 	if err != nil {
