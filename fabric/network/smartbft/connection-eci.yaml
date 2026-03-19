@@ -1,15 +1,27 @@
+# Local gateway connection profile for an ECIMSP client.
+# This profile exposes a minimal view of the network: one client organization,
+# one peer, and one orderer on channel statechan-01. The current file is
+# explicitly BFT-labelled and uses localhost gRPC endpoints, so it should be
+# treated as a local client-access profile rather than as the canonical network
+# description for the Raft deployment.
 name: eci-gateway-bft
 version: 1.0.0
-
+# Client-side organizational identity used by the Fabric gateway.
 client:
   organization: ECIMSP
-
+  
+# Organizational view available to the gateway.
+# Only ECIMSP is declared here, which means discovery and endorsement planning
+# are constrained to the local ECI-side perspective exposed by this profile.
 organizations:
   ECIMSP:
     mspid: ECIMSP
     peers:
       - peer0.eci.bench.local
-
+      
+# Channel-scoped routing information for statechan-01.
+# The profile submits through one orderer and treats peer0.eci.bench.local as
+# the available endorsing, query, ledger-query, and event source peer.
 channels:
   statechan-01:
     orderers:
@@ -21,6 +33,7 @@ channels:
         ledgerQuery: true
         eventSource: true
 
+# Orderer endpoint and trust material used by the client gateway.
 orderers:
   orderer1.eci1.bench.local:
     url: grpcs://localhost:7050
@@ -31,6 +44,7 @@ orderers:
       hostnameOverride: orderer1.eci1.bench.local
       request-timeout: 120000
 
+# Peer endpoint and trust material used for endorsement, query, and event flows.
 peers:
   peer0.eci.bench.local:
     url: grpcs://localhost:7051
