@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate two deterministic CSV fixtures for the election bench:
+Generate deterministic CSV fixtures for the election-bench preload workflow.
+
+The script produces two files. The first is a public candidate catalogue in which
+candidate identifiers are unique across the entire generated dataset. The second
+is a presence-only voter file in which each voter_id_star is deterministically
+derived from the state code and a global serial number, with a collision-safe
+fallback that preserves reproducibility. The output is intended for repeatable
+benchmarks and preload testing, not for synthetic realism.
 
 1) candidates.csv  (public world state)
    - Columns: constituency_id, candidate_id, candidate_name, party_code, symbol_hash
@@ -27,10 +34,14 @@ from typing import Iterable, Tuple, Set
 # -----------------------------
 # Helpers
 # -----------------------------
+
 def dhash(*parts: Iterable[str], n: int = 16) -> str:
     """
-    Deterministic short hex digest.
-    Concatenate the input parts with '|' and return the first n hex chars of SHA-256.
+    Return a deterministic truncated SHA-256 digest over the supplied parts.
+
+    The function is used to derive short, reproducible identifiers and tags for
+    generated fixtures. It is not intended to provide secrecy; its purpose here is
+    stable dataset construction.
     """
     msg = "|".join(map(str, parts)).encode("utf-8")
     return hashlib.sha256(msg).hexdigest()[:n]
@@ -38,9 +49,14 @@ def dhash(*parts: Iterable[str], n: int = 16) -> str:
 
 def unique_hex_id(seed_parts: Tuple[str, ...], n: int, used: Set[str]) -> str:
     """
-    Produce a unique n-hex ID from SHA-256(seed_parts). If (extremely unlikely) the
-    truncated hex collides with an existing ID in 'used', append a numeric suffix
-    and re-hash until uniqueness is achieved. Deterministic for a given dataset.
+    Return a dataset-unique hexadecimal identifier derived from deterministic
+    inputs.
+
+    The function first computes a truncated SHA-256 value from the supplied seed
+    tuple. If that truncated value is already in use, it appends a deterministic
+    numeric suffix and re-hashes until a free identifier is found. This makes the
+    generated dataset reproducible while still guarding against truncation
+    collisions.
     """
     base = dhash(*seed_parts, n=n)
     if base not in used:
@@ -60,6 +76,16 @@ def unique_hex_id(seed_parts: Tuple[str, ...], n: int, used: Set[str]) -> str:
 # Main
 # -----------------------------
 def main():
+    """
+    Parse generation parameters, create the output directory, and write
+    candidates.csv and voters.csv.
+
+    Candidate identifiers are assigned as one global sequence across all
+    constituencies so that downstream code does not need constituency-local
+    disambiguation. Voter identifiers are distributed as evenly as possible across
+    constituencies and are written as presence-only records with status
+    "eligible".
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default="ST01",
                     help="State code written to voters.csv (and used in hashes)")
