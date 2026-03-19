@@ -1,3 +1,13 @@
+# This script evaluates whether browser-compressed face images remain
+# identifiable relative to their originals when embeddings are generated
+# with DeepFace FaceNet512 and compared using cosine distance. It loads
+# image pairs from two folders, computes embeddings once for all original
+# and compressed images, performs all pairwise original-versus-compressed
+# comparisons, and reports standard verification metrics together with
+# detailed false-positive and false-negative examples. The script is
+# intended for empirical comparison of compression impact rather than for
+# production inference.
+
 import sys
 import re
 # --- Step 1: Local DeepFace path ---
@@ -32,6 +42,8 @@ original_dir = os.path.join(downloads_path, "voter_images_faces")
 compressed_dir = os.path.join(downloads_path, "voter_images_faces_compressed")
 
 # --- Step 3: Collect image paths ---
+# Collect all supported image files from the specified folder in sorted
+# order so that evaluation remains reproducible.
 def collect_images(folder, exts=('.jpg', '.jpeg', '.png')):
     return sorted([
         os.path.join(folder, f)
@@ -39,7 +51,9 @@ def collect_images(folder, exts=('.jpg', '.jpeg', '.png')):
         if f.lower().endswith(exts)
     ])
 
-
+# Derive a simple identity label from the leading alphabetic portion of
+# the filename so that comparisons can be labelled as same-person or
+# different-person cases.
 def extract_identity(filename):
     basename = os.path.basename(filename)
     match = re.match(r'^([A-Za-z]+)', basename)
@@ -50,6 +64,8 @@ original_paths = collect_images(original_dir)
 compressed_paths = collect_images(compressed_dir)
 
 # --- Step 4: Generate embeddings ---
+# Compute one embedding per image for both the original-image set and the
+# compressed-image set before any pairwise comparisons are made.
 print("🔍 Generating embeddings...")
 original_embeddings = DeepFace.represent(
     img_path=original_paths,
@@ -74,6 +90,9 @@ y_true, y_pred = [], []
 false_positives = []
 false_negatives = []
 
+# Compare every original image embedding against every compressed-image
+# embedding and classify each pair according to cosine distance and the
+# configured decision threshold.
 for orig_path, orig_embed_list in zip(original_paths, original_embeddings):
     if not orig_embed_list:
         continue
