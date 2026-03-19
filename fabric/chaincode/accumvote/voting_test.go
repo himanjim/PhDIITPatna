@@ -1,14 +1,11 @@
-// Voting_test.go
-//
-// Purpose: Tests for the vote-casting path of AccumVoteContract: preconditions,
-// First-vote behavior, re-vote semantics, input validation, and a light
-// State-ops budget sanity check.
-// Role: Exercises RecordVote + TallyPrepare via the in-memory harness (no real Fabric),
-// Using cc2cc stubs for candidate list. Focus is on correctness signals
-// (accept/reject, accumulator effects) rather than throughput.
-// Key dependencies: newHarness/memWorld test harness, AccumVoteContract, helper
-// Functions like requireNoErr/requireErrContains, and constants such as
-// TestCand1..4, hexEncOneGood.
+/*
+voting_test.go exercises the cast path with the in-memory harness under
+production-like parameter settings. The tests are deliberately narrow: they
+check that RecordVote rejects missing prerequisites, preserves latest-vote-wins
+behaviour, rejects malformed ciphertexts, and does not expand the read or write
+footprint unexpectedly on a re-vote. The objective is contract-boundary
+correctness, not end-to-end Fabric benchmarking.
+*/
 
 package main
 
@@ -26,9 +23,10 @@ func normHex(s string) string {
 	return canonHex(s)
 }
 
-// CanonHex normalizes hex for comparisons: drop 0x, lowercase, and left-pad to even length.
-// Params: s — input string like "0x1", "A", "0a".
-// Returns: normalized hex string suitable for direct string compare.
+// canonHex normalises hexadecimal strings for assertions so that harmless
+// differences in prefix, case, or odd-length padding do not cause false test
+// failures. It is used only at comparison time; it does not alter contract
+// output.
 func canonHex(s string) string {
     s = strings.TrimPrefix(strings.ToLower(s), "0x")
     if len(s)%2 == 1 {
@@ -85,7 +83,9 @@ func TestVoting_PollClosedReject(t *testing.T) {
 	requireErrContains(t, err, "closed")
 }
 
-// TestVoting_FirstVotePlusOne verifies: Voting First Vote Plus One.
+// Establishes the baseline tally behaviour for a single valid cast. After one
+// vote for cand1, the test expects cand1 to hold Enc(1) and every untouched
+// candidate to remain at the Paillier identity element.
 func TestVoting_FirstVotePlusOne(t *testing.T) {
 	setProdEnv(t)
 
@@ -151,7 +151,10 @@ func TestVoting_SameCandidateRevote_NoOp(t *testing.T) {
 	}
 }
 
-// TestVoting_ChangeRevote_MoveBetweenCandidates verifies: Voting Change Revote Move Between Candidates.
+// Demonstrates the latest-vote-wins rule on the accumulator path. The same
+// serial first votes for cand1 and then re-votes for cand2; the expected result
+// is that cand1 returns to the identity element and cand2 carries the single
+// effective encrypted contribution.
 func TestVoting_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	setProdEnv(t)
 
@@ -225,7 +228,10 @@ func TestVoting_BadEncOne_Reject_OutOfRange(t *testing.T) {
 	requireErrContains(t, err, "range")
 }
 
-// TestVoting_StateOpsBudget_ChangeRevote verifies: Voting State Ops Budget Change Revote.
+// Guards the short write path against accidental growth in ledger operations.
+// The test resets the in-memory counters after the first cast and then measures
+// only the re-vote path, using generous ceilings so that structural regressions
+// are caught without turning the test into a micro-benchmark.
 func TestVoting_StateOpsBudget_ChangeRevote(t *testing.T) {
 	// SetDefaultEnv(t)
 	setProdEnv(t)
