@@ -1,4 +1,13 @@
-# 5 Raft orderer orgs (ECI×2, Opp×2, Civil×1) + 3 application orgs (ECI, Opp, Civil)
+# Cryptogen topology for the bench.local election network.
+# This file defines the certificate hierarchy and node counts for five distinct
+# orderer organizations and three application organizations. Its role is to
+# generate MSP and TLS material; it does not itself determine whether the
+# resulting network will run Raft or SmartBFT.
+
+# Ordering organizations.
+# Each orderer is placed in its own organization so that the deployment can
+# model institutionally distinct ordering identities with separate MSP roots and
+# per-node domains.
 OrdererOrgs:
   - Name: ECI1
     Domain: eci1.bench.local
@@ -30,6 +39,10 @@ OrdererOrgs:
     Specs:
       - Hostname: orderer5        # 11050
 
+# Application organizations.
+# Each governance stakeholder receives one peer and one user identity in this
+# topology, which is sufficient for the three-organization endorsement and audit
+# model used by the benchmark network.
 PeerOrgs:
   - Name: ECIMSP
     Domain: eci.bench.local
