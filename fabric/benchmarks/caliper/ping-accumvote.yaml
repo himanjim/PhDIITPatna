@@ -1,8 +1,13 @@
+# Minimal Caliper benchmark configuration for repeated contract-level ping
+# traffic. This file is intended as a low-risk connectivity and service
+# sanity check rather than as a throughput study.
 test:
   name: ping-accumvote2
   description: Ping test for accumvote2
   workers:
     number: 1
+  # Run one sustained round of lightweight requests to confirm that Caliper,
+  # the gateway layer, and the target chaincode are reachable and stable.
   rounds:
     - label: ping_1
       txDuration: 30
