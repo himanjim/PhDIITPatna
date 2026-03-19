@@ -1,28 +1,20 @@
-// -----------------------------------------------------------------------------
-// Accumvote_cc contract (Go, Fabric v3.1.1)
-// Purpose: Implements a high-TPS, privacy-preserving vote accumulator using
-// Paillier Enc(1) multiplication and “latest-vote-wins”, with validation at tally.
-// Role in system: Write-path records a kiosk’s latest vote pointer into a PDC and
-// Minimal public kiosk metadata; read-path/tally composes encrypted sums and
-// Marks invalid votes (non-existent voters/booths, bad ciphertexts) for exclusion.
-// Key dependencies: Hyperledger Fabric contractapi/cid; a canonical preload
-// Chaincode (“evote-preload”) for voters/candidates; a booth registry CC
-// (“boothpdc”) for booth/device windows; private data collection “votes_pdc”.
-// -----------------------------------------------------------------------------
-
 /*
-accumvote.go — Hyperledger Fabric chaincode for the AccumVote prototype.
+accumvote.go implements the ledger-side contract for the AccumVote prototype.
 
-This contract supports a re-voting model (latest vote wins per serial) and a
-privacy-preserving receipt flow:
-- Votes are stored in a private data collection under VOTE::<const>::<serial>.
-- Public ballot metadata is stored under BAL::<serial> with a receipt hash (hC).
-- TXIDX::<txID> is maintained only for ballots marked Current, so tx-based receipt
-  checks do not leak re-vote history.
+The contract is organised around four distinct phases. RecordVote keeps the
+write path short by storing the latest encrypted ballot contribution for a
+serial in private data and only receipt-oriented metadata in world state.
+TallyPrepare reconstructs encrypted candidate totals from those latest records
+and applies candidate, voter-roll, booth, device, and ciphertext checks as
+configured. ApplyBallotStatuses then records the off-chain status plan used for
+receipt verification, and PublishResults anchors the trustee-approved plaintext
+result package on the ledger.
 
-The chaincode does not expose any HTTP endpoints. A separate gateway/service is
-expected to invoke these contract functions and subscribe to emitted events.
+This separation is deliberate. Cast-time work is kept small and predictable,
+while validation, status assignment, and publication remain explicit and
+auditable.
 */
+
 package main
 
 import (
@@ -358,17 +350,22 @@ func getParams(ctx contractapi.TransactionContextInterface) (*Params, error) {
 }
 
 
-// resolveStateForReader determines which state scope should be used for read-only queries.
-// This keeps read paths deterministic in tests and allows multi-state deployments.
+// Bench helper: this build resolves every read to the fixed state code "UP".
+// The function therefore gives deterministic behaviour in tests and benchmarks,
+// but it is not a full production resolver. A production implementation should
+// derive the state scope from authenticated caller attributes or explicit
+// request context rather than from a hard-coded constant.
 func resolveStateForReader(ctx contractapi.TransactionContextInterface) (string, error) {
 /* ABAC bypass note: tests/benchmarks can set BYPASS_ABAC_FOR_TEST=on (and optionally BYPASS_STATE) to skip identity checks. */
 	return "UP", nil
 }
 
 
-// requireABAC enforces attribute-based access control for write operations.
-// In production, callers must present (role, state, constituency) attributes.
-// In tests/benchmarks, the check can be bypassed via environment variables.
+// Bench stub for access control. The current implementation returns the fixed
+// state code "UP" and does not inspect caller attributes. That is acceptable
+// for the in-memory harness used in this repository, but a production variant
+// must enforce caller role, state, and constituency binding before permitting a
+// vote to be recorded.
 func requireABAC(ctx contractapi.TransactionContextInterface, constituencyID string) (string, error) {
     // Test-only bypass: if BYPASS_ABAC_FOR_TEST=on, skip attribute checks.
     // Returns BYPASS_STATE if set, else "TEST".
@@ -389,8 +386,12 @@ func pollIsOpen(ctx contractapi.TransactionContextInterface, constituencyID stri
 }
 
 
-// encOneChecks validates encOneHex is well-formed and safe to use in modular arithmetic.
-// The intent is to reject malformed ciphertexts early (cheap checks only).
+// Recomputes the raw encrypted sums from the latest stored vote for each serial.
+// This method is a diagnostic and audit helper: it initialises every seeded
+// candidate to the Paillier identity element, multiplies in valid Enc(1)
+// contributions found in private data, and returns the resulting ciphertexts in
+// canonical hex form. It does not apply ballot-status updates, voter-roll
+// checks, or booth/device checks beyond basic ciphertext sanity.
 func encOneChecks(c, n2 *big.Int) error {
 one := big.NewInt(1)
 if c.Cmp(one) <= 0 || c.Cmp(n2) >= 0 {
@@ -826,12 +827,13 @@ func (c *AccumVoteContract) GetEncSums(ctx contractapi.TransactionContextInterfa
 
 /* Hot path */
 
-// RecordVote is the high-throughput vote submission entry point.
-//
-// Key properties:
-// - Writes the vote to private data under VOTE::<const>::<serial> (latest write wins).
-// - Writes/updates BAL::<serial> with Status=Pending and the receipt hash (hC).
-// - Does NOT create TXIDX entries; those are created only when ballots become Current.
+// RecordVote is the short write path for the prototype. The method checks poll
+// state, bench ABAC, attestation presence, payload size limits, and basic
+// Paillier ciphertext validity; it then writes the latest private vote record
+// for the serial and a public ballot record containing only receipt- and
+// audit-relevant metadata. Candidate eligibility and voter or booth validity
+// are intentionally deferred to the tally phase so that cast-time work remains
+// small and predictable.
 func (c *AccumVoteContract) RecordVote(
     ctx contractapi.TransactionContextInterface,
     serial, constituencyID, candidateID string,
@@ -914,10 +916,13 @@ func (c *AccumVoteContract) RecordVote(
 
 /* Tally path */
 
-// TallyPrepare prepares an encrypted tally over ballots currently marked as Current.
-//
-// It reads votes from private data, multiplies ciphertexts modulo n^2 per candidate,
-// and writes a public anchor that can be verified by trustees and the public dashboard.
+// TallyPrepare builds a provisional encrypted tally from the latest stored
+// ballot per serial. For each candidate in the seeded local list, the method
+// starts from the Paillier identity element and multiplies in only those
+// private votes that survive candidate-list checks, optional voter-roll lookup,
+// optional booth or device or time validation, and ciphertext sanity checks.
+// The function emits an audit event with a deterministic hash of the encrypted
+// sums, but it does not publish plaintext results or change ballot status.
 func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInterface, constituencyID string) (map[string]string, error) {
 	state, err := resolveStateForReader(ctx)
 	if err != nil { return nil, err }
@@ -1057,10 +1062,12 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 }
 
 
-// ApplyBallotStatuses applies eligibility decisions to BAL::<serial> after off-chain checks.
-//
-// It also maintains TXIDX::<txID> so that tx-based receipt checks only work for Current ballots.
-// Invalid or superseded ballots have their TXIDX entry removed.
+// ApplyBallotStatuses records the off-chain status plan produced after tally
+// preparation. The input JSON is treated as authoritative: entries listed under
+// "current" are written back to BAL::<serial> and indexed in TXIDX for receipt
+// verification, whereas entries listed under "invalid" are marked invalid and
+// are not indexed. This helper does not itself infer supersession or delete
+// stale TXIDX records that are absent from the supplied payload.
 func (c *AccumVoteContract) ApplyBallotStatuses(
     ctx contractapi.TransactionContextInterface,
     constituencyID string,
@@ -1108,8 +1115,11 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 }
 
 
-// markBallotStatus updates BAL::<serial> while preserving receipt-critical fields.
-// In particular, it does not overwrite hC unless a new encOneHex is provided.
+// markBallotStatus writes a fresh public ballot record for one serial from the
+// fields supplied by the caller. Because this helper reconstructs BallotMeta
+// rather than patching selected fields in place, callers must pass every
+// receipt-relevant value they intend to preserve, including the receipt hash
+// when continuity of hC matters across a status update.
 func markBallotStatus(ctx contractapi.TransactionContextInterface, serial, status string, vm VoteMetaPDC) {
     bm := BallotMeta{
         HC:   sha256HexStr(vm.EncOneHex),
@@ -1158,8 +1168,12 @@ func (c *AccumVoteContract) PublishResults(ctx contractapi.TransactionContextInt
 }
 
 
-// VerifyReceipt validates a receipt using (txID, hC) via TXIDX::<txID>.
-// TXIDX is maintained only for Current ballots; unknown txIDs are reported as unknown_tx.
+// VerifyReceipt checks whether the presented txID is currently indexed for
+// receipt verification and whether the supplied receipt hash matches the public
+// ballot metadata for the associated serial. In this design, only ballots
+// carried forward into TXIDX remain directly verifiable; superseded or excluded
+// ballots may therefore resolve as "unknown_tx" rather than as separately
+// retrievable historical receipts.
 func (c *AccumVoteContract) VerifyReceipt(ctx contractapi.TransactionContextInterface, txID string, receipt string) (string, error) {
     serialB, err := ctx.GetStub().GetState(keyTxIdxPrefix + txID)
     if err != nil { return "", err }
