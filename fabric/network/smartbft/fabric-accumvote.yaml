@@ -1,3 +1,9 @@
+# Caliper benchmark profile for an ECI-only Fabric client.
+# This file binds the workload to channel statechan-01 and submits transactions
+# through the Peer Gateway connector using the ECIMSP administrative identity.
+# In its current form, the profile references a BFT-labelled connection profile
+# and crypto tree, so it should be kept aligned with the target deployment stack
+# before being used for benchmark reporting or reproducibility claims.
 name: fab-election-bench-eci-only
 version: "2.0.0"
 
@@ -6,6 +12,10 @@ caliper:
   sutOptions:
     mutualTls: false   # keep false for Peer Gateway connector
 
+# Channel and contract selection for the benchmark run.
+# The workload is attached to statechan-01 and targets the accumvote2 contract.
+# No explicit endorsingOrgs list is declared here, so endorsement routing is left
+# to the gateway and to the effective chaincode endorsement policy.
 channels:
   - channelName: statechan-01
     contracts:
@@ -16,6 +26,10 @@ channels:
         # Note: no endorsingOrgs block here – with OR(ECIMSP.peer,OppMSP.peer,CivilMSP.peer),
         # a single ECI endorsement is sufficient to satisfy the policy.
 
+# Client identity and connection-profile settings used by Caliper.
+# The benchmark runs as ECIMSP, loads the admin certificate and private key from
+# the referenced crypto tree, and enables discovery through the external
+# connection profile rather than hard-coding peer and orderer topology here.
 organizations:
   - mspid: ECIMSP
     identities:
