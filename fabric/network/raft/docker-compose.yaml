@@ -1,3 +1,10 @@
+# Base Docker Compose specification for the bench.local Hyperledger Fabric
+# deployment.
+# The file defines the container topology, host port bindings, TLS and MSP
+# mounts, and runtime environment for a five-orderer, three-peer network using
+# Channel Participation and a SmartBFT ordering service. Consensus, trust roots,
+# and operational endpoints are configured explicitly per service so that the
+# bench remains reproducible across hosts.
 version: "3.9"
 
 networks:
@@ -7,6 +14,10 @@ networks:
 services:
 
   # ==================== ORDERERS (Raft N=5) ====================
+  # Ordering-service containers for the five-node SmartBFT deployment.
+  # Each orderer runs with its own MSP, node TLS material, admin TLS endpoint,
+  # cluster TLS settings, and the full set of mounted orderer CA roots needed to
+  # validate inter-orderer and administrative traffic.
   orderer1.eci1.bench.local:
     image: hyperledger/fabric-orderer:3.1.1
     container_name: bft-orderer1.eci1.bench.local
@@ -207,6 +218,10 @@ services:
     networks: [benchnet]
 
   # ==================== PEERS (1 per app org) ====================
+  # Peer containers for the three application organizations.
+  # Each peer runs with its organization's MSP and TLS material, exposes a stable
+  # host port for gateway and CLI access, and uses the benchnet Docker network so
+  # that chaincode containers and peers resolve one another consistently.
   peer0.eci.bench.local:
     image: hyperledger/fabric-peer:3.1.1
     container_name: bft-peer0.eci.bench.local
