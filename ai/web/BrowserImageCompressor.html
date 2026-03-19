@@ -1,3 +1,13 @@
+<!--
+This page provides a small browser-side utility for resizing and JPEG-
+compressing a batch of images before they are used in DeepFace-related
+experiments. All processing is performed locally in the browser through
+the HTML canvas API, so images are not uploaded to any server. The tool
+creates a fixed 224 × 224 output for each selected image, stores the
+compressed blobs in memory, shows previews, and allows staged download of
+the processed files.
+-->
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -25,6 +35,9 @@ let compressedBlobs = [];
 let filenames = [];
 let currentIndex = 0;
 
+// Read all selected images, resize each one to the fixed output
+// resolution, compress it as JPEG, retain the resulting blob in memory,
+// and display a small preview for visual inspection.
 async function startBatch() {
   const input = document.getElementById('input');
   const files = input.files;
@@ -71,6 +84,9 @@ async function startBatch() {
   alert("Compression complete. Click 'Download Next 30' to begin downloading.");
 }
 
+// Download the next contiguous batch of already compressed images without
+// reprocessing them, then advance the internal cursor until all outputs
+// have been saved.
 function downloadNextBatch() {
   const batchSize = 10;
   const end = Math.min(currentIndex + batchSize, compressedBlobs.length);
