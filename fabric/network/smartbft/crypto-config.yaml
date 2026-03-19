@@ -1,4 +1,13 @@
-# 5 Raft orderer orgs (ECI×2, Opp×2, Civil×1) + 3 application orgs (ECI, Opp, Civil)
+# Cryptogen topology for the Raft bench network.
+# This file defines the certificate-generation layout for five orderer
+# organizations and three application organizations under the bench.local
+# namespace. Its purpose is to generate MSP and TLS material; consensus
+# behaviour is defined later by configtx.yaml and the runtime deployment files.
+
+# Ordering organizations.
+# Each orderer is placed in its own organization so that the deployment models
+# institutionally distinct ordering identities with separate MSP roots and
+# per-node domains.
 OrdererOrgs:
   - Name: ECI1
     Domain: eci1.bench.local
@@ -29,7 +38,11 @@ OrdererOrgs:
     EnableNodeOUs: true
     Specs:
       - Hostname: orderer5        # 11050
-
+      
+# Application organizations.
+# Each governance stakeholder is represented by one peer organization with one
+# peer and one user account, which is sufficient for the three-organization
+# endorsement and audit model used by the prototype.
 PeerOrgs:
   - Name: ECIMSP
     Domain: eci.bench.local
