@@ -1,16 +1,10 @@
-// Voting_critical_test.go
+// voting_critical_test.go isolates the most integrity-sensitive behaviours of the
+// cast path.
 //
-// Purpose: Focused tests for critical vote-casting behaviors and edge cases in
-// AccumVoteContract — missing PK, closed polls, idempotent same-candidate
-// Re-votes, change re-votes, ciphertext validation (hex/range/invertibility),
-// Unknown candidates (filtered at tally), and shard collisions.
-// Role: Stresses correctness guards and “latest-wins” semantics that directly
-// Affect integrity. Uses the in-memory test harness (newHarness/memWorld)
-// With cc2cc stubs; no real Fabric network is involved.
-// Key dependencies: AccumVoteContract methods (RecordVote, TallyPrepare, GetBallotBySerial),
-// Helpers from sibling test files (bigFromPossiblyHex, nSquaredFromHarnessN,
-// PowModHex, requireNoErr, requireErrContains, must2), and test constants
-// (testCand*, hexEncOneGood, hexN, testConst).
+// Compared with voting_test.go, this file is narrower and sharper. Each test targets
+// one failure mode or one re-vote property whose regression would directly affect
+// election correctness: missing keys, closed polls, same-choice and changed-choice
+// re-votes, malformed ciphertexts, and exclusion of unknown candidates at tally time.
 
 package main
 
@@ -20,9 +14,9 @@ import (
 	"testing"
 )
 
-// Trim0xLocal removes an optional 0x/0X prefix.
-// Params: s — string that may start with 0x/0X.
-// Returns: s without the hex prefix (if present).
+// trim0xLocal removes an optional hexadecimal prefix from a test input string. The
+// helper is used when a value must be passed to validation logic in bare integer
+// form while still being derived from a hex constant defined elsewhere in the suite.
 func trim0xLocal(s string) string {
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		return s[2:]
@@ -30,9 +24,9 @@ func trim0xLocal(s string) string {
 	return s
 }
 
-// BigFromPossiblyHexMust wraps bigFromPossiblyHex with a test failure on error.
-// Params: t — testing handle; s — decimal/hex string (0x allowed).
-// Returns: parsed big.Int; fails the test on parse error.
+// bigFromPossiblyHexMust is a test-only adapter that converts a relaxed integer
+// string into a big integer and aborts the test on failure. It keeps the assertions
+// in this file compact without hiding parsing errors.
 func bigFromPossiblyHexMust(t *testing.T, s string) *big.Int {
 	t.Helper()
 	z, err := bigFromPossiblyHex(s)
@@ -42,7 +36,10 @@ func bigFromPossiblyHexMust(t *testing.T, s string) *big.Int {
 	return z
 }
 
-// TestVotingCritical_PKMissingReject verifies: Voting Critical P K Missing Reject.
+// TestVotingCritical_PKMissingReject confirms that the contract refuses vote
+// submission when the election public key is absent. The poll is opened and the
+// candidate list is present so that the missing-key condition is the only intended
+// reason for rejection.
 func TestVotingCritical_PKMissingReject(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -62,7 +59,9 @@ func TestVotingCritical_PKMissingReject(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_PollClosedReject verifies: Voting Critical Poll Closed Reject.
+// TestVotingCritical_PollClosedReject confirms that a cast is rejected after the
+// poll has been closed, even when the public key and candidate list are available.
+// This test isolates the poll-state guard from the other preconditions.
 func TestVotingCritical_PollClosedReject(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -79,7 +78,10 @@ func TestVotingCritical_PollClosedReject(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_FirstVotePlusOne verifies: Voting Critical First Vote Plus One.
+// TestVotingCritical_FirstVotePlusOne confirms the minimum non-zero tally effect of
+// one accepted vote. It checks only the logical outcome: the chosen candidate must
+// no longer have the identity accumulator, whereas the untouched candidate must
+// still remain at identity.
 func TestVotingCritical_FirstVotePlusOne(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -109,7 +111,10 @@ func TestVotingCritical_FirstVotePlusOne(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_SameCandidateRevote_NoOp verifies: Voting Critical Same Candidate Revote No Op.
+// TestVotingCritical_SameCandidateRevote_NoOp confirms that repeated casts for the
+// same candidate under one serial number are idempotent at tally level. A second
+// accepted cast with a different transaction identifier must not alter the final
+// encrypted accumulator for that candidate.
 func TestVotingCritical_SameCandidateRevote_NoOp(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -137,7 +142,10 @@ func TestVotingCritical_SameCandidateRevote_NoOp(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_ChangeRevote_MoveBetweenCandidates verifies: Voting Critical Change Revote Move Between Candidates.
+// TestVotingCritical_ChangeRevote_MoveBetweenCandidates confirms the net tally
+// effect of changing one's choice. After two accepted casts under the same serial
+// number, only the most recent candidate should retain one encrypted vote, and the
+// earlier candidate should return to the Paillier identity element.
 func TestVotingCritical_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -171,7 +179,9 @@ func TestVotingCritical_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_BadEncOne_NonHex verifies: Voting Critical Bad Enc One Non Hex.
+// TestVotingCritical_BadEncOne_NonHex confirms that the cast path rejects a
+// ciphertext that is not parseable as a valid integer. This protects the vote store
+// from malformed input before any tally-time validation is reached.
 func TestVotingCritical_BadEncOne_NonHex(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -187,7 +197,9 @@ func TestVotingCritical_BadEncOne_NonHex(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_BadEncOne_TooSmall verifies: Voting Critical Bad Enc One Too Small.
+// TestVotingCritical_BadEncOne_TooSmall confirms that the cast path rejects a
+// ciphertext at or below the lower admissible boundary. The specific value is chosen
+// to exercise range validation rather than general parsing failure.
 func TestVotingCritical_BadEncOne_TooSmall(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -203,7 +215,10 @@ func TestVotingCritical_BadEncOne_TooSmall(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_BadEncOne_NonInvertible verifies: Voting Critical Bad Enc One Non Invertible.
+// TestVotingCritical_BadEncOne_NonInvertible confirms that a ciphertext sharing a
+// factor with n² is rejected before storage. The test uses c = n, which is
+// guaranteed to be non-invertible modulo n² and therefore invalid for Paillier
+// multiplication in the tally path.
 func TestVotingCritical_BadEncOne_NonInvertible(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -220,7 +235,11 @@ func TestVotingCritical_BadEncOne_NonInvertible(t *testing.T) {
 	}
 }
 
-// TestVotingCritical_UnknownCandidate_ValidateOn verifies: Voting Critical Unknown Candidate Validate On.
+// TestVotingCritical_UnknownCandidate_ValidateOn confirms that candidate validity is
+// enforced at tally time rather than cast time in the current design. The ballot is
+// first accepted into storage, but because the candidate is absent from the seeded
+// candidate list, the tally must ignore it and the later status application must
+// expose the ballot as invalid in public metadata.
 func TestVotingCritical_UnknownCandidate_ValidateOn(t *testing.T) {
     setProdEnv(t) // VALIDATE_ON_TALLY=on
     h := newHarness(t)
