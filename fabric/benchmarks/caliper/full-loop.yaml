@@ -1,9 +1,16 @@
+# Caliper benchmark configuration for one complete post-voting
+# administrative loop in the accumvote flow. The sequence closes the poll,
+# prepares the tally, and publishes the final plaintext result bundle in
+# three explicit rounds so that each transition can be measured and
+# verified independently.
 test:
   name: "accumvote-full-loop"
   description: "ClosePoll, TallyPrepare, PublishResults"
   workers:
     number: 4
-
+  # Execute the administrative lifecycle in protocol order so that later
+  # rounds run only after the prerequisite state transition has been
+  # exercised.
   rounds:
     - label: close_poll
       description: "Close poll for CONST-001 (required before publish)"
