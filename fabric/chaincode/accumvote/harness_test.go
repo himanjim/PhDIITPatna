@@ -1,20 +1,10 @@
-// Harness_test.go
-//
-// Purpose: Minimal, deterministic test harness for the AccumVote chaincode.
-// Role: Provides an in-memory world-state/private-data “ledger”, a mocked Fabric
-// ChaincodeStub (via gomock), and focused helpers to stub cross-chaincode
-// Calls (evote-preload, boothpdc). It lets tests drive the contract
-// Without real peers, orderers, or crypto material.
-// Key deps:
-// - Hyperledger Fabric Go SDKs: chaincode-go/shim, contractapi, protos (peer, msp, queryresult)
-// - gomock for stub expectations and return paths
-// - Google protobuf/timestamppb for stable TxTimestamp values
-// - Local fakes package: github.com/yourorg/accumvote_cc/fakes (mock stub interface)
-// Notes:
-// - This harness makes defensive copies of byte slices to avoid aliasing between
-// The test code and the “ledger” maps.
-// - It purposely keeps behavior small and predictable; only the code paths used
-// By the tests are mocked.
+// This file defines the deterministic in-memory test harness used by the
+// AccumVote unit and integration-style tests. It provides a minimal world
+// state and private-data store, a mocked Fabric ChaincodeStub, range-scan
+// iterators, and focused cross-chaincode stubs for preload and booth
+// validation flows. The goal is to let tests exercise contract behaviour
+// without depending on peers, orderers, MSP material, or a live Fabric
+// runtime.
 
 package main
 
@@ -67,8 +57,10 @@ const (
 
 /* in-memory WS/PDC harness */
 
-// MemWorld is a tiny in-memory ledger used by the mock stub.
-// It tracks world state (ws), private data (pdc), emitted events, and op counts.
+// memWorld is a compact in-memory stand-in for Fabric world state and
+// private data collections. It also records emitted events and basic
+// operation counts so that tests can assert functional behaviour and
+// coarse state-access budgets.
 type memWorld struct {
     ws  map[string][]byte
     pdc map[string]map[string][]byte
@@ -80,9 +72,8 @@ type memWorld struct {
     }
 }
 
-// NewMemWorld allocates an empty memWorld.
-// Params: none.
-// Returns: pointer to a zeroed, ready-to-use memWorld.
+// Create an empty in-memory ledger with separate maps for public state and
+// private data collections.
 func newMemWorld() *memWorld {
     return &memWorld{ws: make(map[string][]byte), pdc: make(map[string]map[string][]byte)}
 }
@@ -175,10 +166,8 @@ func (it *memPDCIter) Next() (*queryresult.KV, error) {
 // Returns: error (always nil here).
 func (it *memPDCIter) Close() error { return nil }
 
-// IterPDCRange materializes a range scan over a PDC collection.
-// It honors [start, end) lexicographic bounds and sorts keys for deterministic order.
-// Params: coll, start, end.
-// Returns: an iterator over the selected KV slice.
+// Materialise a deterministic lexicographic range scan over one private
+// data collection so that iterator behaviour is stable across test runs.
 func (m *memWorld) iterPDCRange(coll, start, end string) *memPDCIter {
     c := m.pdc[coll]
     if c == nil { return &memPDCIter{} }
@@ -228,11 +217,8 @@ type boothStubRec struct {
     DeviceID, DeviceKeyFingerprint string
 }
 
-// StubBoothOK wires gomock expectations to answer boothpdc calls for a single booth.
-// It handles HasBooth and GetBooth for the provided state/constituency/booth, returning
-// An active row with the given device and time window.
-// Params: state, cid, booth, devID, devFP, open, close.
-// Returns: none.
+// Materialise a deterministic lexicographic range scan over public world
+// state keys.
 func (h *testHarness) stubBoothOK(state, cid, booth, devID, devFP string, open, close int64) {
     h.stub.EXPECT().
         InvokeChaincode(
@@ -273,10 +259,9 @@ func (h *testHarness) stubBoothOK(state, cid, booth, devID, devFP string, open, 
         })
 }
 
-// ReadVM is a test helper that fetches the latest VoteMetaPDC for a serial from the in-mem PDC.
-// It fails the test if the key is missing or JSON is malformed.
-// Params: t (testing.T), h (harness), constituencyID, serial.
-// Returns: VoteMetaPDC value.
+// Load the latest private vote record for one serial directly from the
+// in-memory private-data collection and fail the test if it is missing or
+// malformed.
 func readVM(t *testing.T, h *testHarness, constituencyID, serial string) VoteMetaPDC {
 	t.Helper()
 	coll := votesPDC
@@ -299,10 +284,8 @@ func readVM(t *testing.T, h *testHarness, constituencyID, serial string) VoteMet
 
 /* tx context w/ real stub (no gomock ctx) */
 
-// SimpleTxCtx adapts a raw shim.ChaincodeStubInterface to a contractapi TransactionContext.
-// It keeps the shape tiny because tests only need GetStub.
-// Params: none (constructed with a stub field).
-// Returns: methods to satisfy contractapi.TransactionContextInterface.
+// simpleTxCtx is a minimal TransactionContext adapter that exposes only
+// the stub path required by the contract under test.
 type simpleTxCtx struct{ s shim.ChaincodeStubInterface }
 
 // GetStub returns the underlying ChaincodeStubInterface.
@@ -313,8 +296,8 @@ func (c *simpleTxCtx) GetClientIdentity() cid.ClientIdentity { return nil }
 
 /* test harness (single definition) */
 
-// TestHarness bundles the mock controller, stub, in-mem ledger, and the contract under test.
-// It also tracks a mutable txID to let tests simulate different transactions.
+// testHarness bundles the mock controller, mocked stub, in-memory ledger,
+/// contract instance, and mutable transaction identity used by the tests.
 type testHarness struct {
     ctrl *gomock.Controller
     ctx  contractapi.TransactionContextInterface
@@ -325,9 +308,9 @@ type testHarness struct {
     txID string
 }
 
-// newHarness builds a mocked Fabric transaction context for unit tests.
-// It wires world state and private data collections to in-memory maps.
-// The harness resets global caches (e.g., pkCache) to keep tests isolated.
+// Build a fully wired test harness with mocked Fabric interfaces, stable
+// default timestamps and channel identity, in-memory state backing, and a
+// default active booth/device mapping.
 func newHarness(t *testing.T) *testHarness {
     t.Helper()
 
@@ -393,10 +376,9 @@ func newHarness(t *testing.T) *testHarness {
 
 /* cc2cc stub (pointer return matches your shim) */
 
-// StubPreloadCC mocks evote-preload for both candidate list and voter eligibility.
-// It responds to multiple function names to tolerate minor variations in upstream code.
-// Params: cands (candidate IDs), eligible map[serial]bool (nil => everyone eligible).
-// Returns: none.
+// Stub the preload chaincode for both candidate enumeration and voter
+// eligibility checks, tolerating the small function-name variations used
+// across different contract paths and test cases.
 func (h *testHarness) stubPreloadCC(cands []string, eligible map[string]bool) {
     payloadCands := toJSONBytes(cands)
 
@@ -508,10 +490,8 @@ func requireErrContains(t *testing.T, err error, wantSubstr string) {
 
 /* tiny JSON & identity helpers */
 
-// JsonMarshal is a minimal, allocation-aware encoder for []string used by tests.
-// It exists to avoid pulling in more JSON wrangling and to keep output stable.
-// Params: v (only []string is supported; anything else returns "null").
-// Returns: raw JSON bytes.
+// Encode a small subset of JSON values with deterministic formatting for
+// lightweight test fixtures.
 func jsonMarshal(v any) []byte {
     switch s := v.(type) {
     case []string:
@@ -536,10 +516,8 @@ func jsonMarshal(v any) []byte {
 // Returns: JSON bytes (best effort).
 func toJSONBytes(v any) []byte { b, _ := json.Marshal(v); return b }
 
-// DevSerializedIdentity generates a minimal SerializedIdentity with a self-signed cert.
-// It’s good enough for GetCreator parsing in contract code.
-// Params: ms (MSP ID).
-// Returns: raw serialized identity bytes.
+// Construct a minimal serialized identity with a self-signed certificate
+// so that GetCreator-dependent code paths can run during tests.
 func devSerializedIdentity(ms string) []byte {
     key, _ := rsa.GenerateKey(rand.Reader, 1024)
     tpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
@@ -552,20 +530,16 @@ func devSerializedIdentity(ms string) []byte {
 
 /* env presets used by your tests */
 
-// SetDefaultEnv applies production-like toggles and enables ABAC bypass for unit tests.
-// It sets BYPASS_STATE to ensure deterministic state resolution.
-// Params: t.
-// Returns: none.
+// Apply the standard unit-test environment profile, including deterministic
+// state resolution and explicit ABAC bypass.
 func setDefaultEnv(t *testing.T) {
     setProdEnv(t)
     t.Setenv("BYPASS_ABAC_FOR_TEST", "on")
     t.Setenv("BYPASS_STATE", testStateUP)
 }
 
-// SetProdEnv sets sane defaults mirroring the intended production posture,
-// While still allowing unit tests to run deterministically.
-// Params: t.
-// Returns: none.
+// Apply a production-like feature profile while still keeping the tests
+// deterministic and self-contained.
 func setProdEnv(t *testing.T) {
     t.Setenv("VALIDATE_CANDIDATE", "on")
     t.Setenv("VERIFY_ATTESTATION", "on")
