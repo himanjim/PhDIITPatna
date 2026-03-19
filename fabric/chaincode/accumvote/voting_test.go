@@ -1,11 +1,10 @@
-/*
-voting_test.go exercises the cast path with the in-memory harness under
-production-like parameter settings. The tests are deliberately narrow: they
-check that RecordVote rejects missing prerequisites, preserves latest-vote-wins
-behaviour, rejects malformed ciphertexts, and does not expand the read or write
-footprint unexpectedly on a re-vote. The objective is contract-boundary
-correctness, not end-to-end Fabric benchmarking.
-*/
+// voting_test.go covers the cast path of the contract from the perspective of the
+// in-memory harness.
+//
+// The tests focus on what RecordVote contributes to later tally outcomes: rejection
+// when required preconditions are missing, correct handling of first votes and
+// re-votes, rejection of malformed ciphertext inputs, and a coarse guard on the
+// number of state operations used by the re-vote path.
 
 package main
 
@@ -16,17 +15,17 @@ import (
 
 const testSerial = "S-001"
 
-// NormHex normalizes a hex string for equality checks.
-// Params: s — input hex string (may include 0x).
-// Returns: canonical lowercase hex with even length (via canonHex).
+// normHex reduces a ciphertext or accumulator string to a canonical form suitable
+// for equality assertions in tests. The helper exists only to make the assertions
+// stable across minor formatting differences such as optional 0x prefixes or odd
+// hex lengths.
 func normHex(s string) string {
 	return canonHex(s)
 }
 
-// canonHex normalises hexadecimal strings for assertions so that harmless
-// differences in prefix, case, or odd-length padding do not cause false test
-// failures. It is used only at comparison time; it does not alter contract
-// output.
+// canonHex canonicalises a hex string by removing a leading 0x prefix, converting
+// to lowercase, and left-padding odd-length values. The function does not validate
+// semantic correctness; it only normalises formatting for string comparison.
 func canonHex(s string) string {
     s = strings.TrimPrefix(strings.ToLower(s), "0x")
     if len(s)%2 == 1 {
@@ -46,7 +45,10 @@ func asIdentityIfBlank(s string) string {
     return s
 }
 
-// TestVoting_PKMissingReject verifies: Voting P K Missing Reject.
+// TestVoting_PKMissingReject checks that vote submission fails when no Paillier
+// public key has been installed for the resolved state. The candidate list and poll
+// state are prepared so that the failure can be attributed specifically to missing
+// key material rather than to an earlier guard.
 func TestVoting_PKMissingReject(t *testing.T) {
 	// SetDefaultEnv(t)
 	setProdEnv(t)
@@ -64,7 +66,9 @@ func TestVoting_PKMissingReject(t *testing.T) {
 	requireErrContains(t, err, "public key") // Contract error text: "public key for state ... not set"
 }
 
-// TestVoting_PollClosedReject verifies: Voting Poll Closed Reject.
+// TestVoting_PollClosedReject checks that RecordVote refuses an otherwise valid
+// submission once the poll has been marked closed. The public key is installed
+// first so that the rejection path isolates the poll-state guard.
 func TestVoting_PollClosedReject(t *testing.T) {
 	// SetDefaultEnv(t)
 	setProdEnv(t)
@@ -83,9 +87,10 @@ func TestVoting_PollClosedReject(t *testing.T) {
 	requireErrContains(t, err, "closed")
 }
 
-// Establishes the baseline tally behaviour for a single valid cast. After one
-// vote for cand1, the test expects cand1 to hold Enc(1) and every untouched
-// candidate to remain at the Paillier identity element.
+// TestVoting_FirstVotePlusOne checks the baseline tally effect of one accepted
+// ballot. After one cast for candidate 1, the encrypted sum for candidate 1 should
+// equal the supplied Enc(1) value, while the accumulator for candidate 2 should
+// remain at the Paillier identity element.
 func TestVoting_FirstVotePlusOne(t *testing.T) {
 	setProdEnv(t)
 
@@ -114,7 +119,10 @@ func TestVoting_FirstVotePlusOne(t *testing.T) {
 	}
 }
 
-// TestVoting_SameCandidateRevote_NoOp verifies: Voting Same Candidate Revote No Op.
+// TestVoting_SameCandidateRevote_NoOp checks that a re-vote for the same candidate
+// does not change the encrypted tally outcome. Distinct transaction identifiers are
+// used to model two separate casts, but because the selected candidate is unchanged,
+– the net encrypted contribution should remain exactly one Enc(1) for that candidate.
 func TestVoting_SameCandidateRevote_NoOp(t *testing.T) {
 	setProdEnv(t)
 
@@ -151,10 +159,11 @@ func TestVoting_SameCandidateRevote_NoOp(t *testing.T) {
 	}
 }
 
-// Demonstrates the latest-vote-wins rule on the accumulator path. The same
-// serial first votes for cand1 and then re-votes for cand2; the expected result
-// is that cand1 returns to the identity element and cand2 carries the single
-// effective encrypted contribution.
+// TestVoting_ChangeRevote_MoveBetweenCandidates checks the latest-vote-wins rule
+// when a voter changes preference. A first vote is cast for candidate 1 and a later
+// vote for candidate 2 under the same serial number. The final encrypted tally must
+// therefore return candidate 1 to the identity element and assign one Enc(1) to
+// candidate 2.
 func TestVoting_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	setProdEnv(t)
 
@@ -190,7 +199,9 @@ func TestVoting_ChangeRevote_MoveBetweenCandidates(t *testing.T) {
 	}
 }
 
-// TestVoting_BadEncOne_Reject_NonHex verifies: Voting Bad Enc One Reject Non Hex.
+// TestVoting_BadEncOne_Reject_NonHex checks that RecordVote rejects ciphertext input
+// that cannot be parsed as a valid integer. The test ensures that malformed input is
+// rejected before it can affect private data or public ballot metadata.
 func TestVoting_BadEncOne_Reject_NonHex(t *testing.T) {
 	// SetDefaultEnv(t)
 	setProdEnv(t)
@@ -209,7 +220,10 @@ func TestVoting_BadEncOne_Reject_NonHex(t *testing.T) {
 	requireErrContains(t, err, "hex")
 }
 
-// TestVoting_BadEncOne_Reject_OutOfRange verifies: Voting Bad Enc One Reject Out Of Range.
+// TestVoting_BadEncOne_Reject_OutOfRange checks that RecordVote rejects ciphertext
+// values outside the admissible Paillier range. The specific input is deliberately
+// chosen at the lower boundary so that the failure comes from range validation
+// rather than from parsing.
 func TestVoting_BadEncOne_Reject_OutOfRange(t *testing.T) {
 	// SetDefaultEnv(t)
 	setProdEnv(t)
@@ -228,10 +242,10 @@ func TestVoting_BadEncOne_Reject_OutOfRange(t *testing.T) {
 	requireErrContains(t, err, "range")
 }
 
-// Guards the short write path against accidental growth in ledger operations.
-// The test resets the in-memory counters after the first cast and then measures
-// only the re-vote path, using generous ceilings so that structural regressions
-// are caught without turning the test into a micro-benchmark.
+// TestVoting_StateOpsBudget_ChangeRevote places a coarse budget on ledger touches
+// during the change-of-choice re-vote path. The test is not a micro-benchmark. Its
+// role is to detect accidental growth in state or private-data operations that would
+// make the hot path materially heavier than intended.
 func TestVoting_StateOpsBudget_ChangeRevote(t *testing.T) {
 	// SetDefaultEnv(t)
 	setProdEnv(t)
