@@ -1,12 +1,9 @@
-// Contract_ping_test.go
+// contract_ping_test.go contains smoke tests for contract construction and the
+// minimal health path.
 //
-// Purpose: Fast “does it even start?” checks for the AccumVoteContract. These
-// Smoke tests confirm that the contract can be constructed by Fabric’s
-// Contract API and that a trivial method (Ping) reads the current TxID.
-// Role: Guards against broken constructors/wiring and mock regressions before
-// Heavier tests run.
-// Key deps: Fabric contract API (contractapi), gomock for lightweight stubbing,
-// And the generated fakes in fakes/ for ChaincodeStub and Tx context.
+// These tests do not exercise election logic. Their purpose is narrower: they check
+// that the Fabric contract can be instantiated and that a method using the
+// transaction context can read a stable TxID through the mocked stub.
 
 package main
 
@@ -18,14 +15,20 @@ import (
 	f "github.com/yourorg/accumvote_cc/fakes"
 )
 
-// Test_Chaincode_Constructs verifies: Chaincode Constructs.
+// Test_Chaincode_Constructs confirms that the Fabric contract API can construct the
+// chaincode wrapper for AccumVoteContract without failing during registration or
+// basic reflection-based wiring. This test is intended to catch packaging and API
+// breakage early, before deeper behavioural tests are run.
 func Test_Chaincode_Constructs(t *testing.T) {
   if _, err := contractapi.NewChaincode(new(AccumVoteContract)); err != nil {
     t.Fatalf("NewChaincode failed: %v", err)
   }
 }
 
-// Test_Ping_UsesTxID verifies: Ping Uses Tx I D.
+// Test_Ping_UsesTxID confirms that the Ping method reads the transaction stub made
+// available through the mocked context and includes the current TxID in its return
+// value. The test is deliberately small, but it protects against regressions in the
+// mock wiring and in the contract's use of Fabric context objects.
 func Test_Ping_UsesTxID(t *testing.T) {
   ctrl := gomock.NewController(t); defer ctrl.Finish() // Ensure mock expectations are asserted
   stub := f.NewMockChaincodeStubInterface(ctrl)
