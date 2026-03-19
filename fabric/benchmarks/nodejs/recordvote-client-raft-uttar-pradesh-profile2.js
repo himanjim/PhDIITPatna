@@ -1,4 +1,11 @@
-	'use strict';
+/**
+ * Standalone Fabric Gateway benchmark client for the RecordVote path
+ * using an alternate connection profile. The script mirrors the CSV-based
+ * transaction generation used by the Caliper workload but executes rounds
+ * directly from Node.js so that profile-specific gateway behaviour can be
+ * measured independently.
+ */
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
@@ -47,7 +54,9 @@ const SERIAL_PREFIX = 'SERIAL';
 const DEFAULT_CONST = 'C-001';
 
 // --------- Helpers ---------
-
+/**
+ * Load one CSV file into an array of records keyed by the header row.
+ */
 function loadCsv(filePath) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`CSV not found: ${filePath}`);
@@ -64,10 +73,17 @@ function loadCsv(filePath) {
   return records;
 }
 
+/**
+ * Select one random element from an input table for transaction
+ * generation.
+ */
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+/**
+ * Compute an empirical percentile from the recorded latency samples.
+ */
 function percentile(latenciesMs, p) {
   if (!latenciesMs.length) return 0.0;
   const s = [...latenciesMs].sort((a, b) => a - b);
@@ -75,13 +91,10 @@ function percentile(latenciesMs, p) {
   return s[k];
 }
 
-// Map CSV rows → RecordVote args
-// RecordVote(
-//   serial, constituencyID, candidateID,
-//   encOneHex, receiptSalt, epoch, attestationSig,
-//   boothID, deviceID, deviceKeyFP,
-//   bioAlg, bioNonceB64, bioCipherB64, bioTagHex
-// )
+/**
+ * Construct the ordered RecordVote argument list from one sampled voter,
+ * candidate, and booth tuple.
+ */
 function buildRecordVoteArgs(voter, candidate, booth, workerId, seq) {
   const serial =
     voter.voter_id_star && voter.voter_id_star.length
@@ -125,7 +138,10 @@ function buildRecordVoteArgs(voter, candidate, booth, workerId, seq) {
   return args;
 }
 
-// One tx: submit RecordVote and measure end-to-end latency
+/**
+ * Submit one RecordVote transaction and return its end-to-end client-side
+ * latency in milliseconds.
+ */
 async function invokeRecordVote(contract, voters, candidates, booths, workerId, seq) {
   const voter = pickRandom(voters);
   const cand = pickRandom(candidates);
@@ -139,7 +155,10 @@ async function invokeRecordVote(contract, voters, candidates, booths, workerId, 
   return Number(t1 - t0) / 1e6; // ms
 }
 
-// Run one round (Caliper-style): bounded concurrency, targetLoad → concurrency
+/**
+ * Execute one benchmark round with bounded concurrency and summarise the
+ * resulting throughput and latency characteristics.
+ */
 async function runRound(label, txCount, targetLoad, contract, voters, candidates, booths) {
   const concurrency = Math.min(
     Math.max(targetLoad, 1),
@@ -240,7 +259,11 @@ async function runRound(label, txCount, targetLoad, contract, voters, candidates
 }
 
 // --------- Main ---------
-
+/**
+ * Load benchmark inputs, construct the gateway identity and contract
+ * handle, determine the round schedule, and execute all configured
+ * benchmark rounds.
+ */
 async function main() {
   // 1) Load CSVs (once)
   const voters = loadCsv(VOTERS_CSV);
