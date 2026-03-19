@@ -1,9 +1,10 @@
-// This file contains end-to-end and integration-style tests for the
-// publication phase of the AccumVote flow. The tests cover encrypted tally
-// preparation, trustee-side decryption consistency, latest-vote-wins
-// behaviour across re-votes, result anchoring, receipt verification, and
-// the linkage between on-chain ballot metadata and test-only receipt or
-// QR-style artefacts.
+// publish_test.go covers the post-cast path of the contract, from encrypted tally
+// preparation to public result anchoring and receipt verification.
+//
+// The tests combine small Paillier arithmetic, revote scenarios, voter and
+// booth-related exclusions, biometric linkage metadata, and QR-style receipt flows.
+// Although the harness is lightweight, the cases in this file are designed to model
+// the system-level semantics that matter after polling closes.
 
 package main
 
@@ -22,8 +23,10 @@ import (
 	"encoding/base64"
 )
 
-// cast holds one synthetic vote description used to drive multi-step
-// publication and receipt-verification scenarios.
+// cast describes one synthetic ballot used in the end-to-end tests. Each entry
+// records the serial number, selected candidate, Paillier randomiser, expected
+// transaction identifier, and any receipt-facing values captured from the cast
+// acknowledgement returned by the contract.
 type cast struct {
     serial string
     cand   string
@@ -44,8 +47,10 @@ type paillierTestKey struct {
 	n, n2, lambda, mu *big.Int
 }
 
-// Build a small Paillier test keypair from two toy primes so that tally
-// outputs can be checked against known plaintext counts.
+// newPaillierTestKey constructs a deliberately small Paillier key pair for unit
+// testing. The key is cryptographically insecure and must never be used outside the
+// test suite, but it is sufficient to demonstrate the algebraic behaviour expected
+// from encrypted vote accumulation and decryption.
 func newPaillierTestKey(p, q int64) *paillierTestKey {
 	P := big.NewInt(p)
 	Q := big.NewInt(q)
@@ -93,8 +98,9 @@ func (k *paillierTestKey) decCountT(t *testing.T, cStr string) *big.Int {
 
 // ------------------------------ Test utilities ------------------------------
 
-// Write a deterministic test public key to ledger state using g=n+1 so
-// that subsequent tally operations run against a known modulus.
+// setPK_Custom writes a test public key to ledger state using the same contract
+// entry point used in normal setup. This keeps the tests close to the actual key
+// installation path rather than seeding state by hand.
 func setPK_Custom(t *testing.T, h *testHarness, n *big.Int) {
 	t.Helper()
 	g := new(big.Int).Add(n, big.NewInt(1))
@@ -102,8 +108,9 @@ func setPK_Custom(t *testing.T, h *testHarness, n *big.Int) {
 	requireNoErr(t, h.cc.SetJointPublicKey(h.ctx, testStateUP, pkJSON))
 }
 
-// Load and parse the published result anchor for one constituency and
-// round from world state.
+// fetchPublishedAnchor reads back the public result anchor written by
+// PublishResults and unmarshals it into a typed structure. The helper makes the
+// publication assertions explicit and avoids repeating raw state access logic.
 func fetchPublishedAnchor(t *testing.T, h *testHarness, constituencyID, roundID string) TallyResultAnchor {
 	t.Helper()
 	key := fmt.Sprintf("%s%s::%s", keyResultsPrefix, constituencyID, roundID)
@@ -163,8 +170,10 @@ func makeBioCipherB64(qbytes []byte) string {
 	return base64.StdEncoding.EncodeToString(buf)
 }
 
-// Compute the deterministic HMAC-based biometric linkage tag used by the
-// tests to verify storage and audit consistency.
+// computeBioTagHex derives a deterministic HMAC tag over the synthetic biometric
+// payload and the transaction context fields used for linkage in the tests. The tag
+// is not treated as a privacy mechanism here; it is a reproducible integrity handle
+// that lets the tests confirm that the stored value matches the expected input tuple.
 func computeBioTagHex(qbytes []byte, serial, txID, constituency string, ktag []byte) string {
 	mac := hmac.New(sha256.New, ktag)
 	mac.Write(qbytes)
@@ -179,7 +188,10 @@ func computeBioTagHex(qbytes []byte, serial, txID, constituency string, ktag []b
 
 // ----------------------------- Tests 12 to 16 -------------------------------
 
-// TestPublish_RequiresClosedPoll verifies: Publish Requires Closed Poll.
+// TestPublish_RequiresClosedPoll confirms that results cannot be published while
+// polling is still open. The test prepares enough election state to reach the
+// publish guard cleanly, then checks that PublishResults fails for the intended
+// reason rather than because of missing setup.
 func TestPublish_RequiresClosedPoll(t *testing.T) {
     setProdEnv(t)
     h := newHarness(t); 
@@ -198,7 +210,10 @@ func TestPublish_RequiresClosedPoll(t *testing.T) {
     requireErrContains(t, err, "poll must be closed")
 }
 
-// TestPublish_HappyPath verifies: Publish Happy Path.
+// TestPublish_HappyPath checks the minimum successful publication flow: one vote is
+// cast, the poll is closed, the encrypted tally is prepared, and a plaintext result
+// map is anchored on ledger. The test then reads back the stored anchor and checks
+// that both the result payload and bundle hash were preserved exactly.
 func TestPublish_HappyPath(t *testing.T) {
 	setProdEnv(t)
 	h := newHarness(t)
@@ -242,7 +257,11 @@ func TestPublish_HappyPath(t *testing.T) {
 	}
 }
 
-// TestPublish_ConsistencyWithDecryption verifies: Publish Consistency With Decryption.
+// TestPublish_ConsistencyWithDecryption checks that the plaintext result anchored by
+// PublishResults matches the result obtained by decrypting the encrypted sums
+// returned from TallyPrepare. The purpose is not to test trustee decryption itself,
+– but to ensure consistency between the encrypted tally path and the published
+// plaintext outcome.
 func TestPublish_ConsistencyWithDecryption(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -279,7 +298,10 @@ func TestPublish_ConsistencyWithDecryption(t *testing.T) {
 	}
 }
 
-// TestPublish_EndToEnd_DecryptAndVerifyWinner verifies: Publish End To End Decrypt And Verify Winner.
+// TestPublish_EndToEnd_DecryptAndVerifyWinner builds a multi-voter revote scenario
+// and follows it through tally preparation, decryption, publication, and winner
+// verification. The case is intended to demonstrate that repeated voting by the
+// same serial numbers collapses correctly to a final winner under latest-vote-wins.
 func TestPublish_EndToEnd_DecryptAndVerifyWinner(t *testing.T) {
 	setDefaultEnv(t)
 	h := newHarness(t)
@@ -333,7 +355,12 @@ func TestPublish_EndToEnd_DecryptAndVerifyWinner(t *testing.T) {
 	}
 }
 
-// TestPublish_EndToEnd_RealScenario_WithQR verifies: Publish End To End Real Scenario With Q R.
+// TestPublish_EndToEnd_RealScenario_WithQR models a fuller election-style flow in
+// which several voters cast and re-cast ballots, the contract returns receipt-facing
+// hashes at cast time, encrypted tallies are later decrypted, and the final
+// published result is checked against the decrypted counts. The test stops short of
+// receipt verification, but it preserves the receipt data that would be needed for
+// that step.
 func TestPublish_EndToEnd_RealScenario_WithQR(t *testing.T) {
     // Production-ish flags
     setProdEnv(t)
@@ -434,7 +461,11 @@ func TestPublish_EndToEnd_RealScenario_WithQR(t *testing.T) {
     }
 }
 
-// Test_VerifyReceipt_Revote_OnlyLatestIsValid verifies: Verify Receipt Revote Only Latest Is Valid.
+// Test_VerifyReceipt_Revote_OnlyLatestIsValid checks the receipt semantics of
+// latest-vote-wins. Two ballots are cast under the same serial number, but only the
+// final transaction is indexed as current after status application. Receipt
+// verification must therefore succeed for the latest transaction and fail for the
+// earlier one.
 func Test_VerifyReceipt_Revote_OnlyLatestIsValid(t *testing.T) {
 	setProdEnv(t)
 	h := newHarness(t)
@@ -503,7 +534,11 @@ func Test_VerifyReceipt_Revote_OnlyLatestIsValid(t *testing.T) {
 
 
 
-// Test_EndToEnd_InvalidVoter_BioTag_Linkage verifies: End To End Invalid Voter Bio Tag Linkage.
+// Test_EndToEnd_InvalidVoter_BioTag_Linkage checks two properties together. First,
+// a ballot cast by an ineligible serial number must be excluded from the encrypted
+// tally and later marked invalid in public metadata. Second, the biometric linkage
+// tag stored in private data must match the deterministically recomputed value for
+// both the valid and invalid records.
 func Test_EndToEnd_InvalidVoter_BioTag_Linkage(t *testing.T) {
 	setProdEnv(t) // VERIFY_ATTESTATION=on; VALIDATE_ON_TALLY=on; ValidateBoothOnTally=on
 	h := newHarness(t)
@@ -610,7 +645,11 @@ func Test_EndToEnd_InvalidVoter_BioTag_Linkage(t *testing.T) {
 }
 
 
-// Test_EndToEnd_InvalidVoter_Excluded_And_BioTag_Linkage verifies: End To End Invalid Voter Excluded And Bio Tag Linkage.
+// Test_EndToEnd_InvalidVoter_Excluded_And_BioTag_Linkage extends the previous case
+// to a three-ballot scenario with two valid voters and one invalid voter. The test
+// checks that only the valid ballots contribute to the encrypted sums, that the
+// invalid ballot is later exposed as invalid in public state, and that the stored
+// biometric linkage tags remain reproducible for all records.
 func Test_EndToEnd_InvalidVoter_Excluded_And_BioTag_Linkage(t *testing.T) {
 	setProdEnv(t)
 	h := newHarness(t)
@@ -711,8 +750,9 @@ func Test_EndToEnd_InvalidVoter_Excluded_And_BioTag_Linkage(t *testing.T) {
 
 /* test-only helpers (place in the same _test.go file) */
 
-// Return a deterministic 512-byte pseudo-embedding for stable linkage
-// tests.
+// dummyEmbed512 returns a deterministic stand-in for a face embedding so that the
+// linkage-tag tests are reproducible. The value is not intended to resemble a real
+// biometric feature vector; it is only a stable byte pattern.
 func dummyEmbed512() []byte {
     // Deterministic 512-byte vector so the HMAC is stable across runs
     b := make([]byte, 512)
@@ -720,8 +760,9 @@ func dummyEmbed512() []byte {
     return b
 }
 
-// Compute the base64-encoded HMAC tag used by the end-to-end invalid-voter
-// linkage tests.
+// bioTagHexFor returns a deterministic HMAC tag over the synthetic embedding and
+// vote context fields, encoded in base64. The helper is used only in tests that
+// need to compare a stored linkage tag with a locally recomputed value.
 func bioTagHexFor(Ktag, embed []byte, serial, txID, constituency string) string {
     // HMAC-SHA256(Ktag, embed || "|" || serial || "|" || txID || "|" || constituency)
     mac := sha256.New
@@ -738,15 +779,17 @@ func bioTagHexFor(Ktag, embed []byte, serial, txID, constituency string) string 
 
 
 
-// B64url encodes bytes with URL-safe base64 and no padding.
-// Params: b.
-// Returns: string.
+// b64url encodes bytes using URL-safe base64 without padding so that the sealed QR
+// payload remains compact and JSON-friendly in the tests.
 func b64url(b []byte) string {
     s := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
     return s
 }
 
-// Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks verifies: Sealed Q R Kiosk Decrypt Verify Receipt Supersession Works.
+// Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks models the receipt
+// semantics of a sealed QR workflow. The kiosk must be able to decrypt both the old
+// and new QR payloads locally, but only the QR corresponding to the ballot finally
+// recognised as current should verify successfully against on-ledger receipt data.
 func Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks(t *testing.T) {
 	setProdEnv(t)
 	h := newHarness(t)
@@ -846,6 +889,7 @@ func Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks(t *testing.T) {
 	}
 }
 
+
 type sealedQREnvelope struct {
 	V      int    `json:"v"`
 	TxID   string `json:"txID"`
@@ -856,8 +900,10 @@ type sealedQREnvelope struct {
 	Sealed string `json:"sealed"`
 }
 
-// Seal a candidate choice into an authenticated QR-style payload that is
-// cryptographically bound to the public receipt fields.
+// makeSealedQRPayload constructs a compact JSON envelope containing the public
+// receipt fields together with an AEAD-sealed candidate identifier. The associated
+// data binds the sealed choice to the transaction and receipt metadata so that the
+// payload cannot be repurposed by simple field substitution.
 func makeSealedQRPayload(t *testing.T, kioskKey []byte, txID, serial, hC, epoch, candidateID string) string {
 	t.Helper()
 
@@ -895,8 +941,10 @@ func makeSealedQRPayload(t *testing.T, kioskKey []byte, txID, serial, hC, epoch,
 	return string(b)
 }
 
-// Open and authenticate a sealed QR-style payload using the kiosk key and
-// return both the envelope and the recovered candidate choice.
+// kioskOpenSealedQRPayload reverses the test QR sealing process and returns both the
+// public envelope and the recovered candidate identifier. The helper represents the
+// kiosk-side view: it can decrypt what was encoded into the QR payload, but it still
+// requires VerifyReceipt to decide whether the transaction remains current on ledger.
 func kioskOpenSealedQRPayload(t *testing.T, kioskKey []byte, qrPayload string) (sealedQREnvelope, string) {
 	t.Helper()
 
@@ -932,8 +980,8 @@ func kioskOpenSealedQRPayload(t *testing.T, kioskKey []byte, qrPayload string) (
 	return env, string(pt)
 }
 
-// Open and authenticate a sealed QR-style payload using the kiosk key and
-// return both the envelope and the recovered candidate choice.
+// b64urlDecode is the inverse of b64url and is used only by the sealed-QR test
+// helpers.
 func b64urlDecode(s string) ([]byte, error) {
 	return base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(s)
 }
