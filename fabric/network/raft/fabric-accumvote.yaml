@@ -1,3 +1,10 @@
+# Caliper network configuration for the AccumVote benchmark on Hyperledger Fabric.
+# This profile binds the workload to channel statechan-01, targets the accumvote3
+# contract, authenticates with the ECIMSP administrative identity, and relies on
+# service discovery through an external connection profile. The file is
+# intentionally minimal so that benchmark behaviour is driven primarily by the
+# deployed network and endorsement policy rather than by hard-coded client-side
+# routing rules.
 name: fab-election-bench-eci-only
 version: "2.0.0"
 
@@ -6,6 +13,11 @@ caliper:
   sutOptions:
     mutualTls: false   # keep false for Peer Gateway connector
 
+# Channel and contract binding for the benchmark workload.
+# Transactions are submitted to statechan-01 against accumvote3 as an ECIMSP
+# client. No explicit endorsingOrgs list is declared here, so endorsement
+# selection is delegated to the gateway connector and the effective chaincode
+# endorsement policy.
 channels:
   - channelName: statechan-01
     contracts:
@@ -16,6 +28,11 @@ channels:
         # Note: no endorsingOrgs block here – with OR(ECIMSP.peer,OppMSP.peer,CivilMSP.peer),
         # a single ECI endorsement is sufficient to satisfy the policy.
 
+# Client identity and discovery settings used by Caliper.
+# The benchmark runs with the ECIMSP admin certificate and reads network
+# topology from the referenced connection profile. asLocalhost remains false
+# because the target peers and orderers are addressed by routable bench.local
+# hostnames rather than by localhost mappings.
 organizations:
   - mspid: ECIMSP
     identities:
