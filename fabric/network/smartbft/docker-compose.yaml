@@ -1,3 +1,9 @@
+# Base Docker Compose specification for the Raft bench.local Fabric network.
+# The file defines the container topology, host port bindings, TLS and MSP
+# mounts, and runtime environment for five orderers and three peers operating on
+# a common benchnet Docker network. Orderers are configured for Channel
+# Participation and explicit inter-orderer TLS trust, while peers expose the
+# standard Fabric peer runtime with Prometheus metrics enabled.
 version: "3.9"
 
 networks:
@@ -7,6 +13,10 @@ networks:
 services:
 
   # ==================== ORDERERS (Raft N=5) ====================
+  # Ordering-service containers for the five-node Raft deployment.
+  # Each orderer runs with its own MSP, node TLS material, admin TLS endpoint, and
+  # an identical set of mounted orderer TLS CA roots so that client, admin, and
+  # inter-orderer trust relationships are explicit and reproducible.
   orderer1.eci1.bench.local:
     image: hyperledger/fabric-orderer:3.1.1
     container_name: orderer1.eci1.bench.local
@@ -207,6 +217,11 @@ services:
     networks: [benchnet]
 
   # ==================== PEERS (1 per app org) ====================
+  # Peer containers for the three application organizations.
+  # Each peer runs with its own MSP and TLS material, uses goleveldb as the state
+  # database, exposes a stable host port, and joins the benchnet Docker network so
+  # that chaincode containers and peer-side services resolve one another
+  # consistently.
   peer0.eci.bench.local:
     image: hyperledger/fabric-peer:3.1.1
     container_name: peer0.eci.bench.local
