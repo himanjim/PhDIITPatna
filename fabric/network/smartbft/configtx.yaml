@@ -1,12 +1,13 @@
----
-# Hyperledger Fabric v3.1.1
-# Application-channel genesis for Channel Participation API (no system channel).
-# - NO global Orderer.Addresses (V3_0 forbids it)
-# - Per-orderer-org OrdererEndpoints instead
-# - Raft (etcdraft) with 5 consenters
-# - Orderer group includes BlockValidation policy
-# - EACH orderer org defines Policies (required)
+# Channel-configuration template for the Raft deployment of the election bench.
+# This file defines the ordering organizations, the three application
+# organizations, the channel and application policies, the etcdraft consenter
+# set, and the RaftChannel profile used to create an application channel through
+# the Channel Participation API. It is an application-channel template and does
+# not define a system channel.
 
+# Membership definitions for both the ordering service and the application
+# domain. The five orderers are split across distinct ordering organizations,
+# while the application layer is represented by ECIMSP, OppMSP, and CivilMSP.
 Organizations:
 
   # -------- ORDERER ORGS (with Policies + OrdererEndpoints) --------
@@ -97,6 +98,9 @@ Organizations:
       Endorsement: { Type: Signature, Rule: "OR('CivilMSP.peer')" }
 
 # ---------------- CAPABILITIES ----------------
+# Fabric capability flags enabled for this network.
+# These settings determine which channel, orderer, and application features are
+# considered valid when the configuration is processed by Fabric v3.x tooling.
 Capabilities:
   Channel: &ChannelCaps
     V2_0: true
@@ -106,6 +110,8 @@ Capabilities:
     V2_0: true
 
 # ---------------- DEFAULTS ----------------
+# Default policies inherited by the application group unless a profile overrides
+# them explicitly.
 Application: &ApplicationDefaults
   Organizations:
   Policies:
@@ -116,10 +122,14 @@ Application: &ApplicationDefaults
     LifecycleEndorsement: { Type: ImplicitMeta, Rule: "MAJORITY Endorsement" }
   Capabilities:
     <<: *AppCaps
-
+# Default ordering-service configuration for the Raft channel profile.
+# The section fixes the ordering type, identifies the five consenters, and
+# defines the orderer-group policies and capabilities used for channel creation.
 Orderer: &OrdererDefaults
   OrdererType: etcdraft
-  # NOTE: No global 'Addresses:' with V3_0 + Participation API
+  # Static Raft consenter set for the application channel.
+  # No global Orderer.Addresses block is declared here; each ordering organization
+  # instead contributes its own endpoint metadata through OrdererEndpoints.
   EtcdRaft:
     Consenters:
       - Host: orderer1.eci1.bench.local
@@ -156,6 +166,7 @@ Orderer: &OrdererDefaults
   Capabilities:
     <<: *OrdererCaps
 
+# Channel-level default policies shared by the application and ordering groups.
 Channel: &ChannelDefaults
   Policies:
     Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
@@ -165,6 +176,8 @@ Channel: &ChannelDefaults
     <<: *ChannelCaps
 
 # ---------------- PROFILE ----------------
+# Concrete channel profile used to generate the application-channel genesis
+# block for statechan-style deployments on the Raft bench.
 Profiles:
   RaftChannel:
     <<: *ChannelDefaults
