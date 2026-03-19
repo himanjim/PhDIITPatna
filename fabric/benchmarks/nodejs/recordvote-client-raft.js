@@ -1,7 +1,13 @@
- you could remember from our earlier chats, we were running NodeJS scripts to benchmark the Ledger BFT bench. We were running the 'recordvote-client_new.js' script with the 'connection-eci-bft-new.yaml' configuration (below). But getting frequent failed transactions with 'SERVICE NOT AVAILABLE' errors. Think hard about whether we can do further changes in code or the configuration to reduce these errors and get higher TPS.
-
-recordvote-client_new.js:
-	'use strict';
+/**
+ * Standalone Fabric Gateway benchmark client for RecordVote with explicit
+ * endorser-pair selection and bounded retry handling. Each transaction is
+ * mapped deterministically to one of three 2-of-3 endorser pairs using
+ * the booth identifier as the sharding key. The purpose of this variant
+ * is to reduce hot-spotting and to make endorser selection more stable
+ * than the default gateway behaviour during high-load SmartBFT or BFT
+ * experiments.
+ */
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
@@ -51,7 +57,9 @@ const DEFAULT_CONST = 'C-001';
 let ENDORSERS = [];  // will be [ECI, OPP, CIV] after connect
 
 // --------- Helpers ---------
-
+/**
+ * Load one CSV file into an array of header-keyed records.
+ */
 function loadCsv(filePath) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`CSV not found: ${filePath}`);
@@ -79,13 +87,10 @@ function percentile(latenciesMs, p) {
   return s[k];
 }
 
-// Map CSV rows → RecordVote args
-// RecordVote(
-//   serial, constituencyID, candidateID,
-//   encOneHex, receiptSalt, epoch, attestationSig,
-//   boothID, deviceID, deviceKeyFP,
-//   bioAlg, bioNonceB64, bioCipherB64, bioTagHex
-// )
+/**
+ * Build the complete ordered RecordVote argument list from one sampled
+ * voter, candidate, and booth tuple.
+ */
 function buildRecordVoteArgs(voter, candidate, booth, workerId, seq) {
   const serial =
     voter.voter_id_star && voter.voter_id_star.length
@@ -129,11 +134,20 @@ function buildRecordVoteArgs(voter, candidate, booth, workerId, seq) {
   return args;
 }
 
-// Small helper: submit RecordVote with a couple of retries on transient errors
+/**
+ * Delay helper used for simple retry backoff between transient submission
+ * failures.
+ */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Submit one RecordVote transaction with deterministic endorser-pair
+ * selection and limited retry on transient gateway or service failures.
+ * Hard semantic failures such as endorsement-policy failure or MVCC read
+ * conflict are not retried.
+ */
 async function submitRecordVoteSafe(contract, args, kioskId) {
   const MAX_ATTEMPTS = 3;
   let attempt = 0;
@@ -173,7 +187,11 @@ async function submitRecordVoteSafe(contract, args, kioskId) {
 
 
 
-// One tx: submit RecordVote and measure end-to-end latency
+/**
+ * Submit one RecordVote transaction, using the booth identifier as the
+ * sharding key for endorser-pair selection, and return the client-
+ * observed end-to-end latency in milliseconds.
+ */
 async function invokeRecordVote(contract, voters, candidates, booths, workerId, seq) {
   const voter = pickRandom(voters);
   const cand = pickRandom(candidates);
@@ -191,9 +209,11 @@ async function invokeRecordVote(contract, voters, candidates, booths, workerId, 
 }
 
 
-
-
-// Run one round (Caliper-style): bounded concurrency, targetLoad → concurrency
+/**
+ * Execute one bounded-concurrency benchmark round and summarise the
+ * resulting success count, failure count, throughput, and latency
+ * distribution.
+ */
 async function runRound(label, txCount, targetLoad, contract, voters, candidates, booths) {
   const concurrency = Math.min(
     Math.max(targetLoad, 1),
@@ -283,6 +303,10 @@ async function runRound(label, txCount, targetLoad, contract, voters, candidates
   });
 }
 
+/**
+ * Compute a simple deterministic 32-bit hash used to map booth
+ * identifiers onto fixed endorser-pair selections.
+ */
 function hashString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -292,7 +316,10 @@ function hashString(str) {
   return hash;
 }
 
-// Map kiosks deterministically to one of 3 pairs: [ECI+OPP], [OPP+CIV], [CIV+ECI]
+/**
+ * Select one of three stable 2-of-3 endorser pairs from the known peer
+ * set, using the kiosk or booth identifier as the mapping key.
+ */
 function pickTwoEndorsers(kioskId) {
   if (ENDORSERS.length < 3) {
     // fallback: use whatever is available
@@ -310,7 +337,12 @@ function pickTwoEndorsers(kioskId) {
 }
 
 // --------- Main ---------
-
+/**
+ * Load benchmark inputs, construct the Fabric Gateway identity and
+ * contract handle, discover the explicit endorser objects used by the
+ * deterministic sharding logic, determine the round schedule, and run all
+ * configured rounds.
+ */
 async function main() {
   // 1) Load CSVs (once)
   const voters = loadCsv(VOTERS_CSV);
