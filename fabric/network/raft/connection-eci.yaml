@@ -1,9 +1,20 @@
+# Fabric connection profile used by an ECIMSP client gateway to access the
+# election network.
+# The profile enumerates the client organization, the peers currently exposed to
+# the gateway, the channel-scoped routing view, and the TLS material needed to
+# trust the listed endpoints. It is intended for application-side invocation and
+# query flows, not for network generation.
 name: eci-gateway
 version: 1.0.0
 
 client:
   organization: ECIMSP
 
+# Organizational view exposed to the client gateway.
+# ECIMSP is the submitting client organization. OppMSP is included so that the
+# gateway can discover and target a second peer when endorsement routing,
+# read-path validation, or event subscription requires a cross-organization
+# view.
 organizations:
   ECIMSP:
     mspid: ECIMSP
@@ -15,6 +26,10 @@ organizations:
     peers:
       - peer0.opp.bench.local
 
+# Channel-scoped routing metadata.
+# For statechan-01, the gateway submits through the listed orderer and treats
+# both declared peers as available for endorsement, chaincode queries, ledger
+# queries, and event delivery.
 channels:
   statechan-01:
     orderers:
@@ -31,6 +46,8 @@ channels:
         ledgerQuery: true
         eventSource: true
 
+# Orderer endpoint and TLS settings used for transaction submission from the
+# client gateway.
 orderers:
   orderer1.eci1.bench.local:
     url: grpcs://orderer1.eci1.bench.local:7050
@@ -41,6 +58,8 @@ orderers:
       hostnameOverride: orderer1.eci1.bench.local
       request-timeout: 120000
 
+# Peer endpoint and TLS settings used for endorsement, queries, and event
+# streams.
 peers:
   peer0.eci.bench.local:
     url: grpcs://peer0.eci.bench.local:7051
