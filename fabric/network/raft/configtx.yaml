@@ -1,12 +1,17 @@
 ---
-# Hyperledger Fabric v3.1.1
-# Application-channel genesis for Channel Participation API (no system channel).
-# - NO global Orderer.Addresses (V3_0 forbids it)
-# - Per-orderer-org OrdererEndpoints instead
-# - Raft (etcdraft) with 5 consenters
-# - Orderer group includes BlockValidation policy
-# - EACH orderer org defines Policies (required)
+# Channel-configuration template for the SmartBFT deployment of the AccumVote
+# bench network.
+# This file defines the MSP membership of the five ordering organizations and
+# three application organizations, the Fabric capability levels, the default
+# channel and application policies, and the BFTChannel profile used to create an
+# application channel through the Channel Participation API. It is a channel
+# creation document, not a system-channel configuration.
 
+# Membership definitions for both ordering and application domains.
+# The ordering service is institutionally split across five distinct orderer
+# organizations so that each replica has its own MSP and endpoint. The
+# application side consists of the three governance stakeholders that host the
+# endorsing peers.
 Organizations:
 
   # -------- ORDERER ORGS (with Policies + OrdererEndpoints) --------
@@ -97,6 +102,9 @@ Organizations:
       Endorsement: { Type: Signature, Rule: "OR('CivilMSP.peer')" }
 
 # ---------------- CAPABILITIES ----------------
+# Fabric capability levels enabled for this deployment.
+# These flags determine which channel, orderer, and application features are
+# considered valid when the channel configuration is processed.
 Capabilities:
   Channel: &ChannelCaps
     V3_0: true
@@ -107,6 +115,8 @@ Capabilities:
 
 
 # ---------------- DEFAULTS ----------------
+# Default application-group policies inherited by the channel application
+# section unless a profile overrides them explicitly.
 Application: &ApplicationDefaults
   Organizations:
   Policies:
@@ -117,7 +127,10 @@ Application: &ApplicationDefaults
     LifecycleEndorsement: { Type: ImplicitMeta, Rule: "MAJORITY Endorsement" }
   Capabilities:
     <<: *AppCaps
-
+    
+# Default ordering-service configuration for the SmartBFT deployment.
+# This section fixes the ordering type, batching behaviour, protocol timeouts,
+# and validation policies used by the five-node ordering cluster.
 Orderer: &OrdererDefaults
   # Switch from Raft to SmartBFT
   OrdererType: BFT
@@ -147,7 +160,9 @@ Orderer: &OrdererDefaults
     LeaderHeartbeatCount: 10
     CollectTimeout: 1s
 
-  # Each BFT node: ID, host, port, MSPID, certs
+# Static mapping from SmartBFT replica identifiers to network endpoints, MSP
+# identities, and TLS certificates. These entries must remain consistent with
+# the generated crypto material and the container runtime configuration.
   ConsenterMapping:
     - ID: 1
       Host: orderer1.eci1.bench.local
@@ -215,6 +230,10 @@ Channel: &ChannelDefaults
     <<: *ChannelCaps
 
 # ---------------- PROFILE ----------------
+# Concrete channel profile used to generate the benchmark application channel.
+# The profile combines the channel defaults, the SmartBFT orderer defaults, and
+# the three application organizations into one genesis block for
+# Channel Participation API join operations.
 Profiles:
   BFTChannel:
     <<: *ChannelDefaults
