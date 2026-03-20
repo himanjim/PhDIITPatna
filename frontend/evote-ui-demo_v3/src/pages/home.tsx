@@ -1,3 +1,10 @@
+/**
+ * Landing page that introduces the two client roles in the prototype.
+ *
+ * The page is not part of the election workflow itself. Its purpose is to make
+ * the role split explicit for demonstrations, testing, and reviewer inspection by
+ * showing the voter-facing path and the verifier-terminal path side by side.
+ */
 import { t, useLang } from "../i18n";
 
 export function Home() {
