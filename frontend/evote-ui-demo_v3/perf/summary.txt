@@ -1,4 +1,5 @@
-﻿Ballot payload (compressed download):
+# This file summarises the measured payload sizes and cast-path timings produced by the UI performance harness.
+Ballot payload (compressed download):
   p50 = 0.2 KB, p95 = 0.2 KB, max = 0.2 KB
 
 Liveness still JPEG bytes (per still; 320x320, JPEG q=0.6):
