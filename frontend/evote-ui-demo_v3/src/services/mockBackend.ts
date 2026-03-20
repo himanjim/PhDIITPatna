@@ -1,20 +1,13 @@
 /**
- * In-browser mock backend.
- * - Intercepts fetch() calls to /api/*
- * - Stores state in-memory (NOT persistent) to mimic server-side isolation
- * - Implements:
- *    /api/session/start, /api/session/end
- *    /api/ballot
- *    /api/liveness
- *    /api/vote/cast
- *    /api/verifier/enroll
- *    /api/receipt/verify
+ * In-browser mock backend used to exercise the UI without external services.
  *
- * The shapes align with the UI document:
- *  - Ballot publication (read-only) separate from casting (write)
- *  - Receipt payload: {v,E,s,hC,nonce,sealed}
- *  - Client B is kiosk-only by construction: verify endpoint requires device credential
+ * The module intercepts /api/* fetch calls, stores all workflow data in transient
+ * memory, and emulates the major service boundaries used by the frontend: session
+ * start and end, ballot publication, liveness assessment, vote casting, verifier
+ * enrolment, and receipt verification. Its purpose is pedagogic and integrative,
+ * not security-accurate simulation.
  */
+
 
 import type { BallotResp, CastReq, CastResp, EnrollReq, EnrollResp, LivenessReq, LivenessResp, SessionStartReq, SessionStartResp, VerifyReq, VerifyResp } from "./api";
 
@@ -74,7 +67,10 @@ function base32Short(hex: string) {
   return `${core.slice(0,5)}-${core.slice(5)}`;
 }
 
-/** Minimal ballot generator per constituency. */
+/**
+ * Construct a minimal constituency ballot and derive its digest from the ballot
+ * contents so that the cast request can reference a stable ballot definition.
+ */
 async function makeBallot(constituencyId: string): Promise<BallotResp> {
   const electionId = "ELECT-2026-DEMO";
   const contestId = `PC-${constituencyId}`;
@@ -119,6 +115,10 @@ function getDeviceToken(req: Request): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Start a new mock voting session, mint session-scoped bearer tokens, and record
+ * the transient workflow state needed for later liveness and cast calls.
+ */
 async function handleStartSession(req: Request) {
   const body = (await req.json()) as SessionStartReq;
 
@@ -168,6 +168,10 @@ async function handleStartSession(req: Request) {
   return json(resp);
 }
 
+/**
+ * End a mock voting session by invalidating the session token and removing the
+ * associated in-memory session record.
+ */
 async function handleEndSession(req: Request) {
   const token = getAuthToken(req);
   if (!token) return unauthorized();
@@ -183,6 +187,9 @@ async function handleEndSession(req: Request) {
   return json({ ok: true });
 }
 
+/**
+ * Return the read-only ballot publication for the requested constituency.
+ */
 async function handleBallot(req: Request, url: URL) {
   const token = getAuthToken(req);
   if (!token) return unauthorized();
@@ -192,6 +199,11 @@ async function handleBallot(req: Request, url: URL) {
   return json(await makeBallot(constituencyId));
 }
 
+/**
+ * Evaluate the mock liveness request, record whether the session has passed the
+ * prerequisite liveness step, and flag a re-vote when the same voter already has a
+ * prior vote record in the in-memory store.
+ */
 async function handleLiveness(req: Request) {
   const token = getAuthToken(req);
   if (!token) return unauthorized();
@@ -222,6 +234,12 @@ async function handleLiveness(req: Request) {
   return json(resp);
 }
 
+/**
+ * Accept a mock cast request after checking session validity and prior liveness,
+ * then generate the receipt-facing fields used by Client A and Client B.
+ * The mock store enforces last-vote-wins semantics by replacing the voter’s latest
+ * record while retaining earlier serial-specific records for verification history.
+ */
 async function handleCast(req: Request) {
   const token = getAuthToken(req);
   if (!token) return unauthorized();
@@ -286,6 +304,10 @@ async function handleCast(req: Request) {
   return json(resp);
 }
 
+/**
+ * Provision a mock verifier device and issue a temporary device credential for
+ * supervised receipt-verification calls.
+ */
 async function handleEnroll(req: Request) {
   const body = (await req.json()) as EnrollReq;
   if (!body.boothId || !body.enrollCode) return json({ error: "missing boothId/enrollCode" }, 400);
@@ -307,6 +329,12 @@ async function handleEnroll(req: Request) {
   return json(resp);
 }
 
+/**
+ * Verify a receipt from the perspective of the supervised Client B terminal.
+ * The handler accepts either a QR payload or short code, resolves the referenced
+ * serial, determines whether that serial is current or superseded under the
+ * last-vote-wins rule, and returns the recorded choice only to the verifier side.
+ */
 async function handleVerify(req: Request) {
   const deviceToken = getDeviceToken(req);
   if (!deviceToken) return unauthorized("device credential required");
@@ -374,6 +402,10 @@ async function handleVerify(req: Request) {
   } satisfies VerifyResp);
 }
 
+/**
+ * Replace window.fetch with a small router that intercepts the demo API endpoints
+ * and forwards all other requests to the browser’s original fetch implementation.
+ */
 export function installMockBackend() {
   const realFetch = window.fetch.bind(window);
 
