@@ -6,12 +6,14 @@ import { state, clearSessionState } from "../../state";
 import { navigate } from "../../router";
 
 /**
- * Client A receipt page:
- * - Presents QR + short code (non-transferable receipt)
- * - SMS is assumed by default (backend responsibility); UI shows confirmation
- * - Optional printout in supervised kiosks (no file download)
- * - Verification on Client B is OPTIONAL (especially for kiosk voters); remote voters may visit supervised kiosk later.
+ * Receipt display page for Client A after a successful cast.
+ *
+ * The page presents the QR payload and short code, reports whether SMS delivery
+ * succeeded in the demo backend, allows supervised printing when permitted, and
+ * then closes the session before either ending the flow or moving to the verifier
+ * terminal path.
  */
+
 export function A_Receipt() {
   const { lang } = useLang();
   const [err, setErr] = useState("");
@@ -27,6 +29,11 @@ export function A_Receipt() {
     );
   }
 
+  /**
+   * Open a temporary print view containing only the receipt artefacts needed for a
+   * supervised paper printout. The print view omits ballot-choice information and is
+   * not retained after printing.
+   */
   function printReceipt() {
     // Dedicated print view: only QR + short code + minimal metadata.
     const html = `
@@ -48,6 +55,11 @@ export function A_Receipt() {
     w.close();
   }
 
+  /**
+   * Ask the backend to end the session, then clear all local session state and move
+   * to the next route. Local clearance is performed even if the backend end call
+   * fails so that shared-device leakage is avoided.
+   */
   async function endSessionAndNavigate(nextRoute: string) {
     setErr("");
     try {
@@ -99,6 +111,9 @@ export function A_Receipt() {
   );
 }
 
+/**
+ * Escape receipt text before writing it into the temporary print-window HTML.
+ */
 function escapeHtml(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" } as any)[c]);
 }
