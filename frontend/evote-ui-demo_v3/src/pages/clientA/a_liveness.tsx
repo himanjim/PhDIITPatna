@@ -6,11 +6,13 @@ import { state } from "../../state";
 import { navigate } from "../../router";
 
 /**
- * Client A liveness page:
- * - Captures a few downscaled still frames from webcam
- * - Sends to /api/liveness (mock)
- * - If biometric de-dup indicates REVOTE, kiosk flow requires booth-officer acknowledgement
- *   before the ballot is displayed (dispute handled by officer per SOP).
+ * Liveness and de-duplication step for Client A.
+ *
+ * The page collects a small set of still frames, submits them to the liveness
+ * endpoint, stores the resulting pass/fail and de-duplication outcome, and then
+ * decides whether the voter may proceed directly to the ballot. In supervised kiosk
+ * mode, a flagged re-vote requires explicit officer acknowledgement before the
+ * ballot is shown.
  */
 export function A_Liveness() {
   const { lang } = useLang();
@@ -28,6 +30,11 @@ export function A_Liveness() {
     );
   }
 
+  /**
+   * Submit the captured still frames for liveness checking and store the returned
+   * assessment in application state. When the response indicates a kiosk re-vote,
+   * the page pauses before navigation so that the officer workflow can intervene.
+   */
   async function onCaptured(framesB64: string[]) {
     setErr("");
     setBusy(true);
@@ -52,12 +59,21 @@ export function A_Liveness() {
   }
 
   const l = state.liveness;
-
+  
+  /**
+   * Record the officer-side acknowledgement for a kiosk re-vote case and continue
+   * to ballot display. In this demo the acknowledgement is local UI state only.
+   */
   function officerConfirmProceed() {
     setRevoteAck(true);
     navigate("/a/ballot");
   }
 
+    /**
+   * Placeholder branch for a dispute or escalation path when a re-vote is contested.
+   * The real system would invoke an operational procedure rather than simply leaving
+   * the flow.
+   */
   function disputeFlow() {
     // In a real SOP: officer launches a dispute workflow (ID re-checks, supervisor approval, etc.)
     // For the demo, we end the session and return to start.
