@@ -1,8 +1,23 @@
-﻿param(
+<#
+Measure end-to-end payload sizes and key response times for the demo API.
+
+The script exercises the start-session, ballot-read, liveness, and cast endpoints
+for a configurable number of runs, records the raw measurements in a CSV file, and
+writes a compact textual summary of the resulting payload-size and timing
+statistics. It is intended for repeatable measurement of the demo transport
+profile rather than for high-concurrency load testing.
+#>
+ 
+ param(
   [string]$BaseUrl,
   [int]$Runs = 30,
   [string]$Mode = "remote"
 )
+
+<#
+Return a linearly interpolated percentile from a numeric sample vector.
+This helper is used for the summary statistics written at the end of the script.
+#>
 
 function Percentile([double[]]$xs, [double]$p) {
   if ($xs.Count -eq 0) { return [double]::NaN }
