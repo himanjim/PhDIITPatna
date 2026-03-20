@@ -1,5 +1,5 @@
 ****************************
-
+# This file is a composite setup and benchmark runbook for the face-embedding and vector-search pipeline. It covers five logically separate stages: InsightFace model preparation, Triton deployment and validation, FAISS microservice setup, Locust-based end-to-end load testing, and threshold calibration. It should not be read as one uninterrupted script; each section serves a distinct operational purpose.
 InsightFace:
 
 mkdir -p ~/triton_test/model_repository/buffalo_l/1
@@ -11,12 +11,13 @@ model_repository/
     │   └── model.plan          # FP16 TensorRT engine rebuilt with dynamic shapes
     └── config.pbtxt
 
+# This block prepares the Triton model repository layout for the buffalo_l face-embedding model and stages the ONNX source model that will later be converted into a TensorRT engine.
 wget https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
 unzip buffalo_l.zip
 mv w600k_r50.onnx model.onnx
 
 		
-
+# This block defines the Triton model configuration, including input and output tensor names, allowed batch sizes, and the instance-group layout. These settings control batching behaviour and GPU parallelism during inference benchmarking.
 model_repository/buffalo_l/config.pbtxt:
 name: "buffalo_l"
 platform: "tensorrt_plan"
@@ -47,7 +48,7 @@ sudo docker stop 31209caf410c
 						
 pip install onnx protobuf
 
-
+# This Python snippet rewrites the ONNX graph so that the batch dimension becomes dynamic. The resulting model is then suitable for TensorRT engine building across a bounded range of batch sizes rather than a single fixed input shape.
 import onnx
 m = onnx.load("w600k_r50.onnx")
 m.graph.input[0].type.tensor_type.shape.dim[0].dim_param  = "batch"
@@ -55,6 +56,7 @@ m.graph.output[0].type.tensor_type.shape.dim[0].dim_param = "batch"
 onnx.save(m, "w600k_r50_dynamic.onnx")
 
 
+# This block builds the FP16 TensorRT engine from the dynamic ONNX model. The chosen minimum, optimal, and maximum shapes define the range over which Triton can batch inference requests efficiently during performance testing.
 
 cd ~/triton_test/model_repository 
 sudo docker run --rm --gpus all -v $PWD:/workspace  \
@@ -68,7 +70,7 @@ sudo docker run --rm --gpus all -v $PWD:/workspace  \
          --fp16"
 
 
-
+# This block starts Triton against the prepared model repository using host networking and enlarged shared-memory settings. It is the service launch step that must succeed before either perf_analyzer or any Python client-side validation becomes meaningful.
 #sudo docker run --gpus all --rm -p8000:8000 -p8001:8001 -v $(pwd)/model_repository:/models  nvcr.io/nvidia/tritonserver:24.07-py3  tritonserver --model-repository=/models
 
 cd ~/triton_test/model_repository          # IMPORTANT: repo root
@@ -82,7 +84,7 @@ sudo docker pull nvcr.io/nvidia/tritonserver:24.07-py3-sdk    # same YY.MM tag a
 # 2. Launch an interactive shell that can reach the running Triton server
 sudo docker run --rm -it --net host nvcr.io/nvidia/tritonserver:24.07-py3-sdk bash   # --net host lets it hit localhost:8000/8001
 
-
+# These commands probe Triton throughput and latency at progressively increasing client-side concurrency levels. They are intended to characterise server-side inference capacity independently of the wider application stack.
 # 1 request
 perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 1 --input-data random --max-threads 256 --async
 perf_analyzer -m buffalo_l -i gRPC -u localhost:8001 --concurrency-range 10 --input-data random --max-threads 256 --async
@@ -105,7 +107,7 @@ curl -s localhost:8000/v2/models/buffalo_l/versions/1 | jq
 
 pip install tritonclient[grpc] numpy onnx
 
-
+# This client-side sanity check submits a synthetic batch to Triton and verifies that the returned embedding tensor has the expected shape. It is a functional validation step rather than a benchmark.
 import numpy as np
 from tritonclient.grpc import InferenceServerClient, InferInput, InferRequestedOutput
 
@@ -133,7 +135,7 @@ response = client.infer(model_name="buffalo_l", inputs=[input0], outputs=outputs
 embeddings = response.as_numpy("683")  # Shape: [B, 512]
 print("✅ Received embeddings:", embeddings.shape)
 
-
+# This block creates a separate Python environment for the FAISS microservice, installs the required packages, and launches the service under Gunicorn with a Uvicorn worker. It should be treated as the vector-search service setup stage, distinct from the Triton inference stage above.
 
 ****************
 mkdir faiss-testing
@@ -181,6 +183,8 @@ gunicorn faiss_ms:app -w 1 --threads 8  -k uvicorn.workers.UvicornWorker --bind 
 
 gunicorn faiss_ms:app -w 1 --threads 8 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:9000 --backlog 2048 --timeout 120 --graceful-timeout 120
 
+# This block prepares the environment used for end-to-end load testing with Locust. The resulting workload is broader than the earlier Triton-only checks because it exercises the clip-processing path, network requests, and the application-level request mix.
+
 **********************
 mkdir locust_test
 python3 -m venv locust_env
@@ -214,6 +218,7 @@ locust -f locustfile.py --headless -u 100  -r 100  -t 60s --csv hundred_users
 locust -f locustfile.py --headless -u 1000 -r 500  -t 120s --csv thousand_users
 locust -f locustfile.py --headless -u 10000 -r 2000 -t 120s --csv tenk_users
 
+# The dependency list below appears to represent a frozen benchmark environment rather than a minimal installation set. It should be preserved only if exact environment replay is required; otherwise it should be separated from the runbook and maintained as a standalone requirements file.
 requirements.txt
 
 absl-py==2.3.1
@@ -399,8 +404,9 @@ zope.interface==5.4.0
 
 pip install -r requirements.txt
 
+# This block calibrates the decision threshold against a supplied image root by querying the Triton-served embedding model and sweeping a score grid toward a target false match rate. It is an evaluation step and should be run only after the inference service has already been validated.
 ***********************
-Calibrate threshhold
+Calibrate threshold
 mkdir calibrate_threshold
 python3 -m venv calibrate_threshold
 source calibrate_threshold/bin/activate
@@ -409,10 +415,6 @@ python3 -m pip install --upgrade pip
 python3 -m pip install "tritonclient[grpc]" numpy opencv-python insightface onnxruntime
 # if OpenCV GUI error on Ubuntu:
 sudo apt-get install -y libgl1
-
-
-
-
 
 python3 calibrate_threshold.py \
   --root "/mnt/c/Users/himan/Documents/Image_Train" \
