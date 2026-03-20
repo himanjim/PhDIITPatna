@@ -1,6 +1,8 @@
 syntax = "proto3";
 
 package livenessbench.v1;
+// This protocol definition exposes a compact gRPC interface for liveness benchmarking in clip-cache mode. The design assumes that server replicas preload decoded clips into memory and that benchmark clients reference those clips by identifier, thereby removing repeated media upload cost from the measured path and allowing the benchmark to focus on liveness-policy execution, aggregation, and service-side timing.
+
 
 // Liveness benchmarking API (clip-cache mode)
 // Replicas preload MP4 clips into RAM (decoded BGR frames).
@@ -12,16 +14,21 @@ package livenessbench.v1;
 // Response includes:
 //   - server_compute_ms: measured only around the liveness pipeline call
 //   - metrics: scalars + timings from liveness_check.py, plus server_total_ms
-
+// LivenessBench groups the four RPCs needed for benchmark orchestration: health probing, policy retrieval, clip discovery, and benchmark execution against a named clip. The service surface is deliberately small so that client implementations can exercise the liveness path without carrying unrelated application concerns.
 service LivenessBench {
+
+  // Health provides a lightweight reachability and role check for both replicas and the aggregator, allowing the benchmark     harness to confirm that the target endpoint is responsive before issuing timed requests.
   rpc Health(HealthRequest) returns (HealthResponse);
+  // GetPolicy returns the canonical liveness-policy payload and its hashes so that benchmark results can be tied to a          specific policy definition rather than to an implicit server configuration.
   rpc GetPolicy(PolicyRequest) returns (PolicyResponse);
+   // ListClips exposes the clip identifiers currently available in the server-side cache. This allows the client to select     benchmark inputs without embedding filesystem assumptions into the protocol itself.
   rpc ListClips(ListClipsRequest) returns (ListClipsResponse);
+  // CheckByClipId executes the liveness pipeline against one cached clip under the requested prompt condition. The request shape is intentionally small so that observed latency is dominated by server-side liveness processing rather than by repeated media transport.
   rpc CheckByClipId(CheckByClipIdRequest) returns (CheckByClipIdResponse);
 }
 
 message HealthRequest {}
-
+// HealthResponse reports both service availability and the logical endpoint identity, which is useful when the same client may target either a direct replica or an aggregator front end.
 message HealthResponse {
   string status = 1;        // "ok"
   string replica_id = 2;    // replica id; aggregator returns "aggregator"
@@ -29,6 +36,7 @@ message HealthResponse {
 
 message PolicyRequest {}
 
+// PolicyResponse carries the benchmark-relevant policy in canonical serialised form together with stable hashes. This allows downstream analysis to verify that two benchmark runs were conducted under the same liveness rules.
 message PolicyResponse {
   string policy_hash_domain = 1;
   string policy_hash_sha256 = 2;
@@ -37,10 +45,12 @@ message PolicyResponse {
 
 message ListClipsRequest {}
 
+// ListClipsResponse returns the set of clip identifiers visible to the server at the time of the call. The protocol intentionally returns identifiers rather than paths so that storage layout remains an implementation detail.
 message ListClipsResponse {
   repeated string clip_ids = 1;   // file stems, e.g., IDLE.mp4 -> "IDLE"
 }
 
+// CheckByClipIdRequest defines the minimum client-controlled inputs for one benchmarked liveness evaluation: an optional trace identifier, a cached clip reference, a prompt condition, and an optional frame cap that can override the server default.
 message CheckByClipIdRequest {
   string request_id = 1;          // optional trace id
   string clip_id = 2;             // must exist in ListClips()
@@ -48,6 +58,7 @@ message CheckByClipIdRequest {
   int32 max_frames = 4;           // 0 => server default
 }
 
+// CheckByClipIdResponse combines the logical outcome of the liveness decision with service-side timing and policy-identification metadata. The metrics map is intentionally open-ended so that additional scalar timings or diagnostic values can be added without changing the basic RPC shape.
 message CheckByClipIdResponse {
   bool ok = 1;
   string why = 2;
