@@ -1,4 +1,12 @@
-﻿const fs = require("fs");
+/**
+ * Summarise build-output sizes for the demo frontend.
+ *
+ * The script scans the generated dist/ tree, computes raw, gzip, and Brotli sizes
+ * for the emitted assets, writes the full measurements to JSON, and produces a
+ * short Markdown summary that can be used in performance documentation or review
+ * appendices.
+ */
+const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const { brotliCompressSync, gzipSync, constants } = zlib;
@@ -7,6 +15,9 @@ const dist = path.join(process.cwd(), "dist");
 const assetsDir = path.join(dist, "assets");
 if (!fs.existsSync(dist)) { console.error("dist/ not found. Run: npm run build"); process.exit(1); }
 
+/**
+ * Recursively enumerate all files beneath the supplied directory.
+ */
 function walk(dir) {
   const out = [];
   for (const name of fs.readdirSync(dir)) {
@@ -18,6 +29,9 @@ function walk(dir) {
   return out;
 }
 
+/**
+ * Format a byte count as a kilobyte string with one decimal place.
+ */
 function fmt(n) { return (n/1024).toFixed(1) + " KB"; }
 
 const files = [];
