@@ -1,3 +1,14 @@
+/**
+ * Top-level application shell for the eVote UI demonstration.
+ *
+ * This component assembles the shared layout and registers the route map for the
+ * two client roles used in the prototype: Client A for voter-side interaction and
+ * Client B for supervised receipt verification. Both flows are bundled into one
+ * build for demonstration convenience. In an operational deployment, access to
+ * Client B would be constrained by device provisioning, credentialed API access,
+ * and booth-side operational controls rather than by route secrecy alone.
+ */
+
 import { Header } from "./components/header";
 import { Home } from "./pages/home";
 import { NotFound } from "./pages/notfound";
