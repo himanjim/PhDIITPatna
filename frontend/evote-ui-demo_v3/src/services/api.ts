@@ -1,6 +1,10 @@
 /**
- * API wrapper. In production this should call your gateway endpoints.
- * For this demo, `installMockBackend()` intercepts requests to /api/*.
+ * Typed client-side API contract for the eVote UI demo.
+ *
+ * The file defines the request and response shapes used by the frontend and wraps
+ * the underlying fetch calls in a small, typed interface. In the current demo the
+ * calls are intercepted by an in-browser mock backend, but the same interface is
+ * intended to reflect the boundary that a production gateway would expose.
  */
 
 export type Mode = "remote" | "kiosk";
@@ -99,6 +103,11 @@ export type VerifyResp = {
 export type EnrollReq = { boothId: string; enrollCode: string };
 export type EnrollResp = { deviceId: string; deviceToken: string; issuedAt: string; expiresAt: string };
 
+/**
+ * Perform one JSON request and fail fast on non-success HTTP responses.
+ * The helper centralises the small amount of transport logic needed by the demo
+ * so that the exported API methods remain declarative.
+ */
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
@@ -108,6 +117,11 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   return await res.json() as T;
 }
 
+/**
+ * Concrete frontend API surface used by the application pages.
+ * The methods preserve the intentional separation between session start, ballot
+ * read, liveness check, vote cast, verifier enrolment, and receipt verification.
+ */
 export const api = {
   startSession: (req: SessionStartReq) => j<SessionStartResp>("/api/session/start", {
     method: "POST",
