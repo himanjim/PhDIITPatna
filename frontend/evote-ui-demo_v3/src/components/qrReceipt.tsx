@@ -4,9 +4,13 @@ import { t, useLang } from "../i18n";
 import { speak } from "../utils/tts";
 
 /**
- * QR rendering component.
- * - Renders a QR code into a canvas (self-hosted dependency via npm)
- * - Shows the short code in large text for manual entry fallback
+ * Receipt presentation component for Client A.
+ *
+ * The component renders the receipt payload as a QR code, displays a human-enterable
+ * short code as a fallback path, and optionally exposes a print action when the
+ * session context permits supervised kiosk printing. The displayed content is
+ * intentionally limited to receipt-facing identifiers and does not reveal the
+ * recorded choice on the voter-facing client.
  */
 export function QrReceipt(props: {
   qrPayload: string;
@@ -35,6 +39,10 @@ export function QrReceipt(props: {
     })();
   }, [props.qrPayload]);
 
+  /**
+ * Read the short receipt code aloud to support users who benefit from an audio
+ * confirmation path or who cannot easily copy the printed characters visually.
+ */
   function speakShortCode() {
     speak(`Receipt code ${props.shortCode}. Proceed to verification if you wish.`, "en-IN");
   }
