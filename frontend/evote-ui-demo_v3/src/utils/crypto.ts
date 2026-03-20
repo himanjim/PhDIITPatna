@@ -1,6 +1,10 @@
 /**
- * Small crypto utilities for receipt short codes, etc.
- * Uses browser SubtleCrypto (available in Chromium-based browsers).
+ * Small browser-side cryptographic helper functions.
+ *
+ * The utilities in this file are intentionally limited to non-sensitive client-side
+ * tasks, such as deterministic digest generation for receipt-facing values in the
+ * demo environment. They rely on the browser Web Crypto API rather than external
+ * libraries.
  */
 
 export async function sha256Hex(input: string): Promise<string> {
