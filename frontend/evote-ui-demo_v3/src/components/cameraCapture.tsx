@@ -12,6 +12,15 @@ import { t, useLang } from "../i18n";
  * - Provides a clear status message area (aria-live)
  * - Uses buttons with explicit labels
  */
+
+/**
+ * Camera capture component used for the liveness step.
+ *
+ * The component requests webcam access, presents a live preview, captures a small
+ * set of downscaled still frames, and returns those frames to the caller as compact
+ * base64-encoded JPEG strings. The design prioritises predictable browser behaviour,
+ * modest payload size, and explicit user feedback over feature richness.
+ */
 export function CameraCapture(props: {
   frames: number;
   onCaptured: (framesB64: string[]) => void;
@@ -25,6 +34,11 @@ export function CameraCapture(props: {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /**
+ * Release the active media stream and detach it from the video element.
+ * This is called both when capture finishes and when the component is closed or
+ * restarted, so that camera access is not left open longer than necessary.
+ */
 function stopCamera() {
   if (stream) {
     stream.getTracks().forEach((t) => t.stop());
@@ -45,6 +59,11 @@ function stopCamera() {
     };
   }, [stream]);
 
+  /**
+ * Request camera access and attach the resulting stream to the preview element.
+ * The function prefers a front-facing camera and moderate resolution, which is
+ * sufficient for the demo liveness payload while keeping device demands modest.
+ */
   async function startCamera() {
     setStatus("");
     // If the camera was already running, stop it before requesting again.
@@ -64,6 +83,11 @@ function stopCamera() {
     }
   }
 
+  /**
+ * Capture the requested number of still frames from the active preview stream.
+ * Frames are taken with small delays between them so that the mock liveness step
+ * receives a short sequence rather than several copies of the same instant.
+ */
   async function captureFrames() {
     if (props.disabled) return;
     const v = videoRef.current;
