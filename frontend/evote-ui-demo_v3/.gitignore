@@ -1,4 +1,10 @@
-﻿# dependencies
+# Ignore rules for the eVote UI demo repository.
+# The list excludes rebuildable frontend artefacts, local operating-system clutter,
+# performance run outputs, and captured still images used during bandwidth tests.
+# The intention is to keep the repository small and to prevent accidental commit of
+# temporary media or measurement files that do not belong in the audited source tree.
+
+# dependencies
 node_modules/
 
 # build output (rebuildable)
