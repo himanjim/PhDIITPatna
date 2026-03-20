@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { t, useLang } from "../i18n";
 
 /**
- * QR scan component using the built-in BarcodeDetector API (Chromium/Edge support).
- * - If BarcodeDetector is unavailable, user can paste the payload manually.
- * - This avoids heavy third-party QR scanning libraries.
+ * QR intake component for the supervised verifier terminal.
+ *
+ * The component uses the browser BarcodeDetector API when available and falls back
+ * to manual receipt entry when that API is unavailable. This keeps the verifier
+ * client lightweight by avoiding large third-party scanning libraries while still
+ * preserving a manual recovery path.
  */
 export function QrScan(props: { onResult: (text: string) => void }) {
   const { lang } = useLang();
@@ -21,6 +24,9 @@ export function QrScan(props: { onResult: (text: string) => void }) {
     };
   }, [stream]);
 
+  /**
+   * Start the rear-camera scanning session when the browser supports QR detection.
+   */
   async function start() {
     setStatus("");
     if (!("BarcodeDetector" in window)) {
@@ -41,6 +47,11 @@ export function QrScan(props: { onResult: (text: string) => void }) {
     }
   }
 
+  /**
+   * Poll the active video stream for QR codes until a result is found or scanning
+   * is stopped. The loop is intentionally simple because this component serves only
+   * as a demo verifier input path.
+   */
   async function loopDetect() {
     const v = videoRef.current;
     if (!v) return;
@@ -66,6 +77,9 @@ export function QrScan(props: { onResult: (text: string) => void }) {
     }
   }
 
+  /**
+   * Stop scanning and release the active camera stream.
+   */
   function stop() {
     setRunning(false);
     if (stream) stream.getTracks().forEach(t => t.stop());
