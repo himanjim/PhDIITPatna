@@ -6,15 +6,13 @@ import { clearSessionState } from "../../state";
 import { navigate } from "../../router";
 
 /**
- * Client B verification page:
- * - Requires booth device enrollment (device-bound credential) to access verify service
- * - Accepts QR scan or manual paste/short-code entry
- * - Displays vote choice only inside supervised booth context
+ * Receipt-verification page for the supervised Client B terminal.
  *
- * SECURITY INTENT:
- *  - Even if a remote voter obtains the receipt, they cannot decrypt/reveal the choice because:
- *      (i) verification service is reachable only from enrolled booth devices (controlled provisioning + device credential),
- *     (ii) network allowlisting is used only as defence-in-depth; primary barrier is credentialed access.
+ * The page checks that the browser holds a valid device credential, accepts a
+ * receipt through QR scan or manual entry, submits the verification request, and
+ * displays the recorded choice only within the controlled verifier context. The
+ * design reflects the project’s split-client model, in which choice revelation is
+ * intentionally unavailable on the voter-facing client.
  */
 export function B_Verify() {
   const { lang } = useLang();
@@ -36,7 +34,12 @@ export function B_Verify() {
     localStorage.removeItem("evote.b.deviceToken");
     localStorage.removeItem("evote.b.expiresAt");
   }
-
+  
+  /**
+   * Clear any residual Client A browser state when the verifier terminal view is
+   * opened. The verifier client must not inherit voter-session data from an earlier
+   * voting interaction on the same browser instance.
+   */
   useEffect(() => {
     // Client B is a verifier terminal: it must never reuse any Client A session state.
     clearSessionState();
@@ -50,6 +53,11 @@ export function B_Verify() {
     if (resp.status === "SUPERSEDED") return "badge warn";
     return "badge danger";
   }, [resp]);
+
+  /**
+   * Submit one receipt string for supervised verification using the currently stored
+   * verifier-device credential.
+   */
 
   async function verify(q: string) {
     setErr("");
