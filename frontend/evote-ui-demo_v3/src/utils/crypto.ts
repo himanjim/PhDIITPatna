@@ -7,6 +7,10 @@
  * libraries.
  */
 
+/**
+ * Compute a SHA-256 digest over the supplied UTF-8 text and return the result as a
+ * lowercase hexadecimal string.
+ */
 export async function sha256Hex(input: string): Promise<string> {
   const b = new TextEncoder().encode(input);
   const h = await crypto.subtle.digest("SHA-256", b);
