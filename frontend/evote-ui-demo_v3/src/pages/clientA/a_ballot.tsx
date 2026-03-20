@@ -5,10 +5,12 @@ import { state } from "../../state";
 import { navigate } from "../../router";
 
 /**
- * Client A ballot page:
- * - Loads candidate list from read-only ballot publication API
- * - Presents large, touch-friendly radio options
- * - Provides an explicit review screen before cast
+ * Ballot display and cast page for Client A.
+ *
+ * The page retrieves the constituency ballot through the read-only ballot API,
+ * stores the result in transient application state, presents a touch-friendly
+ * candidate selection interface, and enforces an explicit review step before the
+ * final cast call is issued.
  */
 export function A_Ballot() {
   const { lang } = useLang();
@@ -22,6 +24,11 @@ export function A_Ballot() {
   const liveness = state.liveness;
   if (!liveness?.passed) return <div class="card"><h2>Liveness required</h2><a href="#/a/liveness">Go to liveness</a></div>;
 
+  /**
+   * Load the ballot definition for the current constituency exactly once per session.
+   * The ballot is treated as read-only publication data and can therefore be cached
+   * safely in transient UI state for the remainder of the voting session.
+   */
   useEffect(() => {
   (async () => {
     if (state.ballot) return;
@@ -43,12 +50,21 @@ export function A_Ballot() {
   const selected = selectedId;
   const selectedCand = useMemo(() => ballot?.candidates.find(c => c.id === selected), [ballot, selected]);
 
+  /**
+   * Move from candidate selection to the review stage after confirming that one
+   * candidate has been selected.
+   */
   function proceedReview() {
     if (!selected) { setErr("Select one candidate."); return; }
     setErr("");
     setStep("review");
   }
 
+  /**
+   * Submit the final cast request using the selected candidate identifier, the
+   * current contest identifier, and the ballot integrity digest returned by the
+   * ballot API.
+   */
   async function cast() {
     if (!ballot || !selected) return;
     setErr("");
