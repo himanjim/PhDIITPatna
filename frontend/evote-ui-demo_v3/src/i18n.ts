@@ -1,5 +1,13 @@
 import { useEffect, useState } from "preact/hooks";
-
+/**
+ * Lightweight internationalisation support for the demo application.
+ *
+ * The file defines the supported language codes, the dictionary objects used by
+ * the interface, and the helper functions that resolve translated strings at
+ * runtime. English acts as the fallback dictionary when a key is absent from a
+ * secondary language. The implementation is intentionally small so that the demo
+ * remains dependency-light and easy to inspect.
+ */
 /**
  * Minimal i18n.
  * - Document requires Eighth Schedule coverage; this demo includes 6 languages.
@@ -85,14 +93,26 @@ const TE: Dict = { ...EN, language: "భాష", home_title: "క్లయిం
 const MR: Dict = { ...EN, language: "भाषा", home_title: "क्लायंट निवडा" };
 
 const DICTS: Record<Lang, Dict> = { en: EN, hi: HI, bn: BN, ta: TA, te: TE, mr: MR };
-
+/**
+ * Resolve one interface string for the requested language.
+ *
+ * The function first checks the selected language dictionary, then falls back to
+ * English, and finally returns the key itself if no translation is defined. This
+ * makes missing translations visible during development without breaking the UI.
+ */
 export function t(lang: Lang, key: string): string {
   return (DICTS[lang] && DICTS[lang][key]) || EN[key] || key;
 }
 
 const LANG_KEY = "evote.lang";
 
-/** Hook for global language selection (stored in localStorage). */
+/**
+ * Persist and expose the current interface language.
+ *
+ * The selected language is kept in localStorage so that benign user preference is
+ * preserved across page reloads and across separate sessions, while sensitive
+ * voting state remains outside persistent browser storage.
+ */
 export function useLang() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) as Lang) || "en");
   useEffect(() => { localStorage.setItem(LANG_KEY, lang); }, [lang]);
