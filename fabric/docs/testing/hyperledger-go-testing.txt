@@ -1,3 +1,7 @@
+# This file documents the Windows-based setup and test procedure for the Hyperledger Fabric Go chaincode test harness. It covers compiler preparation for cgo and race-enabled runs, mock generation, module synchronisation, and the command patterns used to execute both full and targeted test suites. The goal is reproducible local testing rather than production deployment.
+
+# This block prepares the native compiler toolchain required for cgo-backed builds and for use of the Go race detector on Windows. It should be completed before attempting race-enabled test runs or rebuilding mocks that depend on packages compiled with cgo support.
+
 # 1) Install GCC (MSYS2 UCRT64) for cgo / -race
 
 # Install MSYS2 to C:\msys64 (default).
@@ -17,6 +21,8 @@ pacman -S --needed base-devel mingw-w64-ucrt-x86_64-gcc
 
 gcc --version
 
+# This block enables cgo in the current shell and, optionally, for future shells. It is primarily relevant when the test workflow includes the race detector or native dependencies that will not build correctly under a pure CGO_ENABLED=0 configuration.
+
 # 2) Enable cgo (for this terminal and persistently)
 
 # Current shell:
@@ -28,6 +34,7 @@ $env:CGO_ENABLED = "1"
 
 setx CGO_ENABLED 1
 
+# This block installs the mock generation tool used by the chaincode test harness and makes it visible on the user's PATH. It is needed when regenerating interface mocks or when setting up the project on a machine that does not already have the generated files.
 # 3) Install mockgen and put it on PATH
 go install github.com/golang/mock/mockgen@v1.6.0
 # Add %USERPROFILE%\go\bin to your PATH if not already:
@@ -37,6 +44,7 @@ mockgen -version
 
 # (If mockgen still not found, add %USERPROFILE%\go\bin to your user PATH via System Env Vars and reopen the terminal.)
 
+# This block records the Go module dependencies expected by the test harness and then synchronises the module and vendor directories. It should be run from the repository root so that module state, vendored packages, and generated mocks all remain aligned.
 # 4) Project deps (from your repo root)
 
 # Ensure go.mod has these lines (keep your existing module name):
@@ -57,6 +65,8 @@ go mod vendor
 
 # (If things get out of sync: rmdir /s /q vendor then go mod vendor.)
 
+# This block regenerates the gomock implementations for the Fabric transaction context and stub interfaces. The generated files are part of the test scaffolding and should remain stable across collaborators and CI environments once checked into version control.
+
 # 5) Generate mocks (reflect mode)
 
 # Run from the repo root (where go.mod is):
@@ -72,6 +82,8 @@ mockgen -build_flags=-mod=mod -package=main -destination=fakes\mock_stub_test.go
 
 # Commit the generated files (fakes/mock_*.go) so others don’t need mockgen in CI.
 
+
+# This block lists the standard command patterns for running the full suite, enabling the race detector, and narrowing execution to specific voting, tally, or publication paths. It is the operational entry point for day-to-day validation of the chaincode test harness.
 6) Run tests
 
 # All tests:
@@ -102,7 +114,7 @@ mockgen -build_flags=-mod=mod -package=fakes -destination=fakes\mock_txctx_test.
 mockgen -build_flags=-mod=mod -package=fakes -destination=fakes\mock_stub_test.go  github.com/hyperledger/fabric-chaincode-go/v2/shim ChaincodeStubInterface
 
 # TESTS performed
-
+# The material below is descriptive rather than executable. It summarises what each named test is intended to verify so that a later developer or reviewer can interpret the command outputs in relation to the security and correctness properties of the voting contract.
 Smoke / wiring
 contract_ping_test.go
 •	Test_Chaincode_Constructs — Sanity that contractapi.NewChaincode(new(AccumVoteContract)) builds. Pass = no panic, no error.
