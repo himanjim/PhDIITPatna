@@ -1,3 +1,14 @@
+/*
+ * Global stylesheet for the eVote UI demo.
+ *
+ * The design favours legibility, touch-friendly controls, strong focus outlines,
+ * and low visual complexity so that the same stylesheet can support both remote
+ * personal-device use and supervised kiosk use. The palette is intentionally
+ * restrained, with semantic accent, warning, and danger colours used only where
+ * they carry workflow meaning.
+ */
+
+
 :root{
   --bg:#0b0f14;
   --card:#121923;
@@ -40,6 +51,11 @@ button:focus, input:focus, select:focus, textarea:focus{ outline:3px solid var(-
 .hr{ height:1px; background:var(--border); margin: 14px 0; }
 .grid2{ display:grid; grid-template-columns: 1fr; gap: 12px; }
 @media (min-width: 900px){ .grid2{ grid-template-columns: 1fr 1fr; } }
+
+/* Accessibility support: keep the skip link hidden during ordinary use but make
+ * it visible on keyboard focus so that assistive and keyboard-only users can move
+ * directly to the main content region.
+ */
 .skip-link{
   position:absolute; left:-999px; top:0; padding:8px 10px; background:#111827; border:1px solid var(--border); border-radius:8px;
 }
