@@ -1,3 +1,17 @@
+Exact comment text to insert:
+# hyperledger-setup.txt is an operational runbook for building and exercising
+# the Hyperledger Fabric election bench from a fresh host through network start,
+# channel creation, chaincode deployment, preload of synthetic election data,
+# and benchmark-oriented recovery steps. The file mixes one-time provisioning
+# commands, repeatable administrative procedures, and later refinement steps,
+# so it should be read section by section rather than as one uninterrupted
+# script.
+
+
+# This block prepares the base host environment required by the Fabric tooling
+# and the benchmark stack. It installs the system packages, container runtime,
+# JavaScript toolchain, and Go toolchain used later by cryptogen, configtxgen,
+# Caliper, and the Go chaincode build process.
 sudo apt-get update && sudo apt-get upgrade
 
 sudo apt-get –with-new-pkgs upgrade
@@ -35,6 +49,11 @@ Log out user and log in again.
 Verify the installation by typing the following command :
 go version
 
+
+# These commands allow the interactive user to access the Docker daemon without
+# repeated use of sudo. They should be run once per host account and are
+# especially relevant for WSL and other developer workstations where most
+# Fabric administration is performed from a regular shell.
 sudo usermod -aG docker ubuntu
 
 # 2) Add your login user (looks like 'ubuntu') to the docker group
@@ -51,6 +70,10 @@ mkdir -p hyperledger
 
 cd hyperledger
 
+# This block installs the Hyperledger Fabric binaries and sample-tree layout
+# used by the bench. The important output is the local `fabric-samples/bin`
+# directory, which later supplies commands such as cryptogen, configtxgen,
+# peer, and osnadmin.
 curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh && chmod +x install-fabric.sh
 
 ./install-fabric.sh -f 3.1.1 d b s
@@ -59,7 +82,11 @@ echo 'export PATH="$HOME/hyperledger/fabric-samples/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
 ###################
-Environment (Ubuntu 22.04 / WSL2)
+# This block prepares a local Caliper workspace compatible with Fabric 3.x.
+# It pins the Caliper CLI version, applies the js-yaml compatibility override,
+# and binds Caliper to the Fabric Gateway SDK so that later benchmark profiles
+# can target the bench network without legacy SDK assumptions.
+# Environment (Ubuntu 22.04 / WSL2)
 # Install Node.js 22 (Caliper 0.7.0 requires Node ≥22, npm ≥11.5)
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
@@ -86,13 +113,18 @@ npx caliper bind --caliper-bind-sut fabric:fabric-gateway
 cd ~/hyperledger
 mkdir -p data/scripts data/generated scripts
 
-Create generate_dummy_data.py from GitHub
-
+# Copy generate_dummy_data.py from GitHub
+# These commands generate the large synthetic candidate and voter datasets used
+# to preload the benchmark network. The generated data is not intended to model
+# real electoral rolls faithfully; its role is to provide repeatable scale for
+# chaincode and network testing.
 python3 data/scripts/generate_dummy_data.py --state UP --constituencies 80 --candidates 20 --voters 20000000
 
 
 ************************
-
+# This block creates the directory skeleton for the Raft deployment of the
+# election bench and identifies the configuration artefacts that must be copied
+# into place before crypto material and channel blocks can be generated.
 
 mkdir -p ~/fab-election-bench/stacks/stack-v31-raft && cd ~/fab-election-bench/stacks/stack-v31-raft
 mkdir -p crypto config system-genesis-block
@@ -106,6 +138,11 @@ Copy these files from github
 1) Generate crypto (MSP/TLS) for 5 orderers + 3 orgs
 cd /home/ubuntu/fab-election-bench/stacks/stack-v31-raft
 
+
+# These commands materialise the network identities and the initial application
+# channel block. They implement the Channel Participation model, so the block
+# generated here is an application-channel genesis block rather than a legacy
+# system-channel artefact.
 cryptogen generate  --config=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/config/crypto-config.yaml --output=/home/ubuntu/fab-election-bench/stacks/stack-v31-raft/crypto
 
 2) Create the channel block (no system channel; Participation API)
@@ -152,7 +189,12 @@ configtxgen \
 # 2) Add to PATH for this shell
 export PATH="$HOME/fabric/fabric-samples/bin:$PATH"
 
-Add hostnames to /etc/hosts
+# This section binds the local hostnames used by the orderer admin endpoints,
+# copies the channel block where needed, and joins each orderer to the channel
+# through the Participation API. The sequence is essential: hostname
+# resolution, container availability, and TLS material must all be correct
+# before the join commands will succeed.
+# Add hostnames to /etc/hosts
 echo "127.0.0.1 orderer1.eci1.bench.local orderer2.eci2.bench.local orderer3.opp1.bench.local orderer4.opp2.bench.local orderer5.civ1.bench.local" | sudo tee -a /etc/hosts
 
 
@@ -244,6 +286,10 @@ osnadmin channel list -o orderer5.civ1.bench.local:11443 --ca-file $STACK/crypto
 
 4) Join all 3 peers to the channel
 # Copy block
+# This block stages the application-channel block inside each peer container and
+# joins one peer per organization to the channel using the organization admin
+# identity. The subsequent list and getinfo commands serve as a minimal ledger
+# membership and height sanity check.
 docker cp $GEN/statechan-01.v2.block peer0.eci.bench.local:/var/hyperledger/statechan-01.v2.block
 docker cp $GEN/statechan-01.v2.block peer0.opp.bench.local:/var/hyperledger/statechan-01.v2.block
 docker cp $GEN/statechan-01.v2.block peer0.civil.bench.local:/var/hyperledger/statechan-01.v2.block
@@ -280,8 +326,11 @@ docker exec peer0.opp.bench.local   peer channel getinfo -c statechan-01
 docker exec peer0.civil.bench.local peer channel getinfo -c statechan-01
 
 
-
-5) How to restart Fabric after a machine reboot
+# This section documents the recovery path after a host or WSL restart. It does
+# not recreate the network from scratch; instead, it brings the persisted
+# containers back up, refreshes local hostname mappings, and verifies that the
+# orderers and peers still recognise the existing channel state.
+5) Restart Fabric after a machine reboot
 # 1) Start Docker (ensure Docker Desktop / daemon is running for WSL2)
 
 # 2) Bring containers back up (they’ll reuse persisted ledgers/volumes)
@@ -350,7 +399,10 @@ docker exec peer0.civil.bench.local peer channel list
 \\wsl$\Ubuntu\home\ubuntu
 
 
-
+# These commands regenerate the MSP and TLS tree from the project configuration
+# and then normalise file ownership and permissions on the host. They are most
+# relevant when cryptogen was run inside a container and the resulting files are
+# left owned by root.
 #START Configure MSP: Generate your real MSP/TLS from YOUR project config (inside container)
 
 # 1) From repo root
@@ -413,7 +465,10 @@ ls -l stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/users/A
 # Join all 5 orderers via Participation API
 
 #Create certificate bundle
-
+# This block creates a combined TLS CA bundle for orderer administrative and
+# cluster trust, then recreates the orderer containers with the override file
+# that mounts and uses that bundle. The purpose is operational stability rather
+# than network reconfiguration.
 B=stacks/stack-v31-raft/channel-artifacts/orderer-admin-tlscas.bundle.pem
 CR=stacks/stack-v31-raft/crypto/ordererOrganizations
 
@@ -460,6 +515,10 @@ BLK="$PWD/stacks/stack-v31-raft/channel-artifacts/statechan-01.block"
 ORDERER_TLS_CA="$PWD/stacks/stack-v31-raft/crypto/ordererOrganizations/eci1.bench.local/orderers/orderer1.eci1.bench.local/tls/ca.crt"
 
 # helper to push files + join with Admin MSP
+# `join_peer` is a reusable helper that stages the channel block and orderer CA
+# inside a peer container, mounts the correct organization admin MSP, performs a
+# join only if the peer is not already on the channel, and then prints a short
+# post-join verification. It is written to be safe to rerun.
 join_peer () {
   local P="$1"         # peer container name
   local ORG="$2"       # org DNS under peerOrganizations (eci.bench.local | opp.bench.local | civil.bench.local)
@@ -499,7 +558,10 @@ join_peer peer0.civil.bench.local civil.bench.local
 
 docker ps --format '{{.Names}}' | grep -E '^peer0\.'   # shows the real peer names
 
-
+# This section fetches the current channel configuration, computes one
+# organization-specific anchor peer update per MSP, applies the updates through
+# signed channel-config transactions, and finally decodes the latest config to
+# verify that all three anchor peer entries are present.
 #% #%#%#%#%===== START Anchor peers for ECIMSP, OppMSP, CivilMSP (safe script)
 
 # ----- 0) Vars
@@ -617,6 +679,10 @@ jq '.data.data[0].payload.data.config.channel_group.groups.Application.groups.Ci
 
 #% #%#%#%#%===== END Anchor peers for ECIMSP, OppMSP, CivilMSP (safe script)
 
+# This section reproduces the full Fabric lifecycle path for the preload
+# chaincode: installed package discovery, per-organization approval, readiness
+# verification, and final commit. It is useful both for operational deployment
+# and for documenting an auditable lifecycle sequence in the paper.
 #% #%#%#%#%===== START Reproduce “approve → commit” for the paper =====
 # 1.1 Host shell: set common env
 # channel + orderer you’ll use for submits
@@ -739,6 +805,9 @@ docker exec \
 
 
 
+# These commands transform the candidate CSV into constituency-scoped invoke
+# payloads and submit them to the preload chaincode. The workflow keeps the
+# public candidate catalogue aligned with the synthetic data generated earlier.
 
 #% #%#%#%#%===== START Insert candidates dummy data =====
 # Set once (host)
@@ -814,7 +883,11 @@ docker exec "$PEER_CLI" bash -lc \
 
 
 #% #%#%#%#%===== END Insert candidates dummy data =====
-
+# This section prepares the voter-roll preload at scale. It re-chunks the CSV
+# into bounded base64-encoded transient payloads, distributes those chunks into
+# peer-local shard directories, and then uses a retry-capable sequential loader
+# script to invoke `PutVoterRollChunk` repeatedly without overwhelming the CLI
+# argument limits.
 #% #%#%#%#%===== START Configuration for inserting voters dummy data =====
 
 #Re-chunk CSV on HOST at CHUNK_N=800
@@ -1054,7 +1127,9 @@ done
 
 
 #%#%#%#%#%#%#%#%
-
+# This section creates the synthetic booth registry, deploys the boothpdc
+# chaincode with its private data collection, and then performs a small smoke
+# test that writes one transient booth record and verifies its presence by key.
 
 #% #%#%#%#%===== START create booth level dummy data =====
 #Python: generate 170,000 compact booth rows for UP (C-001…C-080)
@@ -1244,7 +1319,10 @@ peer chaincode query -C '"$CHAN"' -n '"$CC_NAME"' \
 
 #% #%#%#%#%===== END Booth PDC chaincode — reproducible commands (host + docker exec) =====
 
-
+# These commands chunk the compact booth CSV, install a verbose loader inside
+# the ECI peer, and run parallel shard-specific booth preload sessions. The
+# emphasis here is reproducible throughput and recoverable logging rather than
+# one-shot ad hoc loading.
 #% #%#%#%#%===== START Configuration for inserting booth dummy data =====
 # 1. Chunk the booth CSV on the host
 # --- paths & knobs (host) ---
@@ -1473,6 +1551,11 @@ docker exec peer0.eci.bench.local \
 
 #% #%#%#%#%===== END Configuration for inserting booth dummy data =====
 
+# These sections document successive lifecycle states of the voting chaincode:
+# initial deployment, later redeployment with modified logic, and fresh
+# deployments under new logical names and endorsement policies. They should be
+# interpreted as versioned administrative procedures, not as a single linear
+# sequence to run verbatim in one session.
 #% #%#%#%#%===== START Committing the accumvote_cc chaincode=====
 
 # 1. Host: env + sanity
@@ -2332,7 +2415,10 @@ for P in peer0.eci.bench.local peer0.opp.bench.local peer0.civil.bench.local; do
   "
 done
 
-
+# This subsection performs a behavioural endorsement-policy check. It first
+# attempts a write with only one endorser and then repeats the write with two
+# endorsers, allowing the operator to confirm that the committed chaincode
+# definition is enforcing the intended policy in practice.
 #2. Behavioural test: show that single-endorser writes don’t commit
 # 2.1. See current params
 docker exec \
@@ -2428,7 +2514,10 @@ peer chaincode query \
 #% #%#%#%#%===== END Deploy accumvote3 from scratch =====
 
 
-
+# This is a minimal end-to-end vote-cast smoke test against the deployed voting
+# chaincode. It uses explicit CLI arguments for one serial number, one
+# constituency, and one candidate so that the operator can verify the hot path
+# before running larger benchmarks.
 #% #%#%#%#%===== START Test RecordVote=====
 docker exec \
   -e CORE_PEER_LOCALMSPID=ECIMSP \
@@ -2482,6 +2571,11 @@ wc -l /home/ubuntu/hyperledger/data/generated/voters.csv
   tail -n +2 /home/ubuntu/hyperledger/data/generated/voters.csv | head -n 1000000; \
 } > /home/ubuntu/hyperledger/data/generated/voters_1M.csv
 
+
+# This embedded script is a consolidated recovery routine for the Raft bench.
+# It refreshes host mappings, recreates the orderer admin TLS CA bundle if
+# needed, restarts the orderers with the override file, verifies admin access,
+# and then conditionally rejoins orderers and restores peer-side admin state.
 #% #%#%#%#%===== Bring the Fabric network up after a reboot (2nd one)=====
 #!/usr/bin/env bash
 set -euo pipefail
