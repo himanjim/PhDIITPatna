@@ -1,14 +1,18 @@
 /**
- * Camera capture helpers:
- * - Capture from <video> into a square-cropped canvas
- * - Downscale to a fixed size
- * - Export as JPEG base64 (for demo API payloads)
+ * Image-capture helpers used by the liveness workflow.
  *
- * NOTE: This does not perform face detection; it crops the center square.
- * In your production build, you can add face detection/cropping on-device (e.g., MediaPipe)
- * but weigh the extra complexity against your low-bandwidth + low-dependency constraints.
+ * The functions in this file crop the centre square from a live video frame,
+ * resize it to a fixed dimension, and export it as a JPEG base64 string suitable
+ * for compact API transport in the demo. The implementation intentionally avoids
+ * face detection or device-specific optimisation so that behaviour remains simple
+ * and predictable.
  */
 
+/**
+ * Capture one frame from the supplied video element, crop the centre square,
+ * resize it to the requested output dimension, and return the JPEG content as a
+ * base64 string without the data-URL prefix.
+ */
 export async function captureDownscaledJpegB64(video: HTMLVideoElement, size = 320, quality = 0.6): Promise<string> {
   const w = video.videoWidth;
   const h = video.videoHeight;
@@ -36,6 +40,10 @@ export async function captureDownscaledJpegB64(video: HTMLVideoElement, size = 3
   return b64.replace(/^data:image\/jpeg;base64,/, "");
 }
 
+/**
+ * Convert one Blob into a data URL so that the caller can extract the encoded
+ * image payload.
+ */
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
