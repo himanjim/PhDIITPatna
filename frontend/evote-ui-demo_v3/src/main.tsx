@@ -1,3 +1,13 @@
+/**
+ * Browser entry point for the demo application.
+ *
+ * The application installs an in-browser mock backend before rendering so that
+ * the full UI flow can be exercised without a running gateway, ledger, or
+ * biometric service. This is a demonstration convenience only. In a production
+ * build, the mock layer should be removed and the UI should communicate with the
+ * real backend interfaces.
+ */
+
 import { render } from "preact";
 import { App } from "./app";
 import { installMockBackend } from "./services/mockBackend";
