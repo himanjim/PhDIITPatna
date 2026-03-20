@@ -4,11 +4,13 @@ import { api } from "../../services/api";
 import { navigate } from "../../router";
 
 /**
- * Client B enrollment page (booth-only in production):
- * - In real deployment, provisioning is controlled by the polling authority:
- *     - app is installed only on managed booth devices
- *     - device obtains a device-bound credential via an on-site enrollment flow
- * - In this demo, enrollment uses boothId + a short enrollCode (BOOTH-17 / 123456)
+ * Device-enrolment page for the verifier terminal.
+ *
+ * This page models the booth-side provisioning step through which a verifier
+ * device receives a device identifier and a device-bound credential. The demo
+ * reduces this to a booth identifier and short enrolment code, but the intended
+ * operational role is to represent controlled terminal provisioning rather than
+ * voter interaction.
  */
 export function B_Enroll() {
   const { lang } = useLang();
@@ -17,6 +19,10 @@ export function B_Enroll() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  /**
+   * Request verifier-device enrolment and store the issued device credential in
+   * browser storage for later receipt-verification calls.
+   */
   async function enroll() {
     setErr("");
     setBusy(true);
