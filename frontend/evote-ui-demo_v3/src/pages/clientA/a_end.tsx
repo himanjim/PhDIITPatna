@@ -4,10 +4,11 @@ import { clearSessionState } from "../../state";
 import { navigate } from "../../router";
 
 /**
- * End-of-session page:
- * - Confirms that client-side state has been cleared
- * - In a supervised booth, the operator can start the next voter session
+ * Final acknowledgement page for Client A.
+ * The page confirms that the user-facing session has ended and that in-memory
+ * voting state has already been cleared.
  */
+
 export function A_End() {
   const { lang } = useLang();
 
