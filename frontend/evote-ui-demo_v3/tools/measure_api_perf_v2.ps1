@@ -1,9 +1,21 @@
-﻿param(
+<#
+Measure API payload sizes and response times using file-based request bodies.
+
+This version writes the start-session, liveness, and cast payloads to files before
+submission so that the measurement path more closely reflects explicit artefact
+sizes on disk. It records per-run values in CSV form and produces a summary text
+report at the end.
+Confirm that the helper used to build deterministic liveness JSON payloads is present.
+#>
+ param(
   [string]$BaseUrl = "http://127.0.0.1:8080",
   [int]$Runs = 30,
   [string]$Mode = "remote"
 )
 
+<#
+Return a linearly interpolated percentile from a numeric sample vector.
+#>
 function Percentile([double[]]$xs, [double]$p) {
   if ($xs.Count -eq 0) { return [double]::NaN }
   $s = $xs | Sort-Object
