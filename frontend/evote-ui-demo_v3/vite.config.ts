@@ -1,3 +1,11 @@
+/**
+ * Vite build configuration for the eVote UI demo.
+ *
+ * The configuration keeps the development server deterministic by fixing the port,
+ * enables the Preact integration, and targets a modern JavaScript runtime for the
+ * production bundle. Operational security headers are intentionally left to the
+ * serving layer rather than encoded in the development build configuration.
+ */
 import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
 
