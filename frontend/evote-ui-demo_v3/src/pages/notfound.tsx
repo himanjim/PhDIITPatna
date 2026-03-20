@@ -1,3 +1,4 @@
+/** Simple fallback view shown when no registered route matches the current path. */
 export function NotFound() {
   return (
     <div class="card">
