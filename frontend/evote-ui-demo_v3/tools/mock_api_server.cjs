@@ -1,9 +1,21 @@
+/**
+ * Lightweight standalone mock API server for local measurement and UI testing.
+ *
+ * The server provides small HTTP endpoints that mirror the same session, ballot,
+ * liveness, cast, and receipt concepts used by the browser-side mock backend, but
+ * exposes them through an actual network interface so that transport size and time
+ * can be measured with external tools.
+ */
 const http = require("http");
 const url = require("url");
 const zlib = require("zlib");
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
 
+/**
+ * Return a JSON response, compressing it with Brotli or gzip when the client
+ * advertises support for those encodings.
+ */
 function json(res, obj, req) {
   const body = Buffer.from(JSON.stringify(obj));
   const ae = (req.headers["accept-encoding"] || "");
@@ -21,6 +33,9 @@ function json(res, obj, req) {
   return res.end(body);
 }
 
+/**
+ * Return a small JSON error response with the supplied HTTP status code.
+ */
 function bad(res, code, msg) {
   res.writeHead(code, { "Content-Type":"application/json" });
   res.end(JSON.stringify({ error: msg }));
@@ -29,10 +44,17 @@ function bad(res, code, msg) {
 const sessions = new Map(); // sessionId -> { voterId, constituencyId, mode }
 const votesByVoter = new Map(); // voterId -> { candidateId, ts }
 
+/**
+ * Generate a compact pseudo-random identifier string for mock-session and receipt
+ * fields. The output is suitable only for demonstration data.
+ */
 function rand(prefix="") {
   return prefix + Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
+/**
+ * Read the full HTTP request body into a single Buffer.
+ */
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -42,10 +64,19 @@ function readBody(req) {
   });
 }
 
+/**
+ * Normalise raw request text before JSON parsing by removing a UTF-8 byte-order
+ * mark and trimming leading and trailing whitespace.
+ */
 function cleanJsonText(raw) {
   return (raw || "").toString("utf-8").replace(/^\uFEFF/, "").trim();
 }
 
+/**
+ * Main request router for the standalone mock API.
+ * Each supported endpoint returns a small synthetic payload that is designed to be
+ * structurally realistic enough for UI integration and transport measurement.
+ */
 const server = http.createServer(async (req, res) => {
   const u = url.parse(req.url, true);
   const p = u.pathname || "/";
