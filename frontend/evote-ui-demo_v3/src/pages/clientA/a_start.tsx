@@ -5,10 +5,13 @@ import { state, clearSessionState } from "../../state";
 import { navigate } from "../../router";
 
 /**
- * Client A start page:
- * - Select mode (remote vs kiosk)
- * - Collect minimal session start inputs (voterId, constituencyId)
- * - Kiosk mode includes officer PIN (placeholder for stronger auth)
+ * Entry page for the Client A voting flow.
+ *
+ * The page establishes the session context by collecting the minimal identifiers
+ * needed to start the demo workflow, selecting whether the session is remote or
+ * booth-supervised, and obtaining the session and capability tokens from the
+ * backend. It also clears any earlier in-memory voter state before a new session
+ * begins.
  */
 export function A_Start() {
   const { lang } = useLang();
@@ -18,7 +21,11 @@ export function A_Start() {
   const [officerPin, setOfficerPin] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-
+  /**
+   * Start a new voting session and move the user to the liveness step.
+   * Session-scoped state is cleared first so that residual values from an earlier
+   * voter cannot be reused accidentally on a shared device.
+   */
   async function start() {
     setErr("");
     setBusy(true);
