@@ -1,9 +1,15 @@
 /**
- * Text-to-speech helper using the Web Speech API.
- * Note: availability and voice quality depend on the device OS/browser.
- * For kiosk deployments, voice packs can be provisioned at OS level (not as offline bundles in this UI).
+ * Text-to-speech helper for optional accessibility support.
+ *
+ * The helper delegates speech synthesis to the browser and operating system.
+ * Availability, voice quality, and installed language coverage therefore depend
+ * on the execution environment rather than on bundled application assets.
  */
 
+/**
+ * Speak the supplied text using the browser speech-synthesis interface when that
+ * interface is available.
+ */
 export function speak(text: string, lang: string = "en-IN") {
   try {
     const synth = window.speechSynthesis;
