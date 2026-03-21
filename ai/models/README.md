@@ -1,9 +1,9 @@
-# Legacy FAISS Experiments
+# Models
 
-This directory stores older experimental FAISS service variants that are kept for reference only.
+This directory contains small model-conversion or model-preparation helpers used by the AI component.
 
 ## Contents
-- `faiss_microservice.py` is a minimal benchmark-style FAISS wrapper retained as a historical implementation.
+- `convert_w600k_r50_to_dynamic_onnx.py` rewrites the ONNX graph metadata so that the batch dimension becomes dynamic.
 
 ## Scope
-Do not add new active development here. If a file in this directory becomes important again, move it back into the main `faiss/` tree and document the reason.
+Keep this directory limited to model-preparation helpers. Runtime inference code should stay with the consuming subsystem.
