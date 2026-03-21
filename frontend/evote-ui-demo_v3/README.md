@@ -6,6 +6,17 @@ This is a **frontend-only** demo that implements the flows described in `User-in
 - Working webcam capture + downscale + JPEG compression
 - QR rendering (Client A) and QR scanning via `BarcodeDetector` (Client B, Chromium)
 
+This directory contains the frontend-only demonstration application for the voting and receipt-verification flows.
+
+## Contents
+- `src/`: Preact application code.
+- `docs/`: UI and API setup notes.
+- `perf/`: performance inputs and captured outputs.
+- `tools/`: local tooling for performance measurement and mock API support.
+
+## Notes
+- This subtree already has a coherent application layout and should not be reorganized casually.
+
 ## Quick start
 1. Unzip the project.
 2. Install dependencies:

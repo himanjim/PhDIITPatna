@@ -35,8 +35,8 @@ Config (env or CLI)
 - ORIG_DIR / COMP_DIR: override default folders
 
 CLI examples
-  python BrowserCompressedImagesAccuracyComparator.py --threshold 1.03
-  python BrowserCompressedImagesAccuracyComparator.py --orig "C:/A" --comp "C:/B" --batch 32
+  python browser_compressed_images_accuracy_comparator.py --threshold 1.03
+  python browser_compressed_images_accuracy_comparator.py --orig "C:/A" --comp "C:/B" --batch 32
 
 Dependencies
   pip install tritonclient[grpc] opencv-python numpy scikit-learn pandas
