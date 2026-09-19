@@ -1,0 +1,29 @@
+{
+  "method": "search-level 1:N FPIR calibration on CelebA calibration identities using cached raccoon_l embeddings",
+  "seed": 20260919,
+  "gallery_size_for_calibration": 800,
+  "repeats": 25,
+  "nonmated_per_repeat": 200,
+  "target_fpirs": [
+    0.01,
+    0.003,
+    0.001
+  ],
+  "primary_threshold_name": "fpir_0.003",
+  "preferred_threshold": {
+    "threshold_name": "fpir_0.003",
+    "target_fpir": 0.003,
+    "tau_l2": 1.1529408088107627,
+    "tau_sq_l2": 1.3292725086212156,
+    "observed_fpir_on_calibration": 0.0038022813688212928,
+    "nonmated_queries_in_calibration": 4997,
+    "mated_queries_in_calibration": 19940,
+    "rank1_identification_rate_on_calibration": 0.9332998996990973,
+    "detection_rate_on_calibration": 0.91283851554664,
+    "fnir_on_calibration": 0.08716148445336003,
+    "wrong_nearest_identity_count_on_calibration": 1330,
+    "correct_identity_but_over_threshold_count_on_calibration": 408
+  },
+  "nonmated_queries_total": 4997,
+  "mated_queries_total": 19940
+}

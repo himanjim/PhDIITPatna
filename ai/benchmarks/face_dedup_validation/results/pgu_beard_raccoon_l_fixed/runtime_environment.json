@@ -1,0 +1,20 @@
+{
+  "python": "3.14.5 (tags/v3.14.5:5607950, May 10 2026, 10:43:50) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "insightface": "2.0",
+  "onnxruntime_gpu": "1.29.0",
+  "faiss_cpu": "1.15.0",
+  "numpy": "2.5.3",
+  "opencv_python_headless": "5.0.0.93",
+  "onnxruntime_available_providers": [
+    "TensorrtExecutionProvider",
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "model_pack": "raccoon_l",
+  "model_file_sha256": {
+    "det_10g_wo.onnx": "9f68c41d8150ec20939e5527bca5686d2fb921b5a4c1f2554d618e70c73e6b5b",
+    "face_verifier_resnet34.onnx": "2876b3e03603d6c0d9749aec325aba66eb9c4977a4e8efdc44369ac0dfe1abb3",
+    "w600k_r50.onnx": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
+  }
+}

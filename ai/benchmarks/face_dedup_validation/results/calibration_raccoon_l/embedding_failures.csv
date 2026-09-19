@@ -1,0 +1,4 @@
+path,status,faces_detected
+data\celeba\img_align_celeba\137880.jpg,face_policy_failed,0
+data\celeba\img_align_celeba\170965.jpg,face_policy_failed,0
+data\celeba\img_align_celeba\174224.jpg,face_policy_failed,0

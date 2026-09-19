@@ -1,0 +1,7 @@
+{
+  "python": "3.14.5 (tags/v3.14.5:5607950, May 10 2026, 10:43:50) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "faiss_cpu": "1.15.0",
+  "numpy": "2.5.3",
+  "pandas": "3.0.6"
+}

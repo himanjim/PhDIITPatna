@@ -1,0 +1,23 @@
+{
+  "dataset": "CelebA",
+  "seed": 20260919,
+  "backend": "local",
+  "tau_l2": 1.2580000000000005,
+  "tau_sq_l2": 1.5825640000000012,
+  "gallery_sizes": [
+    1000,
+    2500,
+    5000,
+    7500,
+    9000
+  ],
+  "mated_probes_per_id": 1,
+  "nonmated_probes_per_id": 10,
+  "nonmated_limit": 10000,
+  "strict_one_face": false,
+  "rgb_before_triton": false,
+  "usable_identities": 9133,
+  "selected_images_for_embedding": 19248,
+  "successful_embeddings": 19229,
+  "embedding_failures": 19
+}

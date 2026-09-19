@@ -1,0 +1,51 @@
+{
+  "software": "InsightFace 2.0",
+  "model_pack": "raccoon_l",
+  "recognition_model": "w600k_r50.onnx",
+  "seed": 20260919,
+  "identity_split": "celeba_identity_split.json",
+  "calibration_identities": 1000,
+  "evaluation_identities": 9133,
+  "calibration_images_embedded": 3902,
+  "positive_pairs": 5738,
+  "negative_pairs": 200000,
+  "target_fmr": 0.001,
+  "selected": {
+    "tau_l2": 1.2580000000000005,
+    "tau_sq_l2": 1.5825640000000012,
+    "fmr": 0.000985,
+    "fnmr": 0.059428372255141165,
+    "accuracy": 0.9973850236708823,
+    "precision": 0.9647836968180193,
+    "recall": 0.9405716277448588,
+    "f1": 0.9525238263325098,
+    "false_matches": 197,
+    "false_non_matches": 341
+  },
+  "eer_like": {
+    "tau_l2": 1.3370000000000006,
+    "tau_sq_l2": 1.7875690000000017,
+    "fmr": 0.04573,
+    "fnmr": 0.046880446148483794,
+    "accuracy": 0.9542379142404417,
+    "precision": 0.3742045843311666,
+    "recall": 0.9531195538515163,
+    "f1": 0.5374146317496192,
+    "false_matches": 9146,
+    "false_non_matches": 269
+  },
+  "legacy_tau_1_15": {
+    "tau_l2": 1.15,
+    "tau_sq_l2": 1.3224999999999998,
+    "fmr": 5e-06,
+    "fnmr": 0.08208434994771698,
+    "accuracy": 0.997705820023525,
+    "precision": 0.9998101746393319,
+    "recall": 0.917915650052283,
+    "f1": 0.9571143012902055,
+    "false_matches": 1,
+    "false_non_matches": 471
+  },
+  "positive_l2_mean": 0.9007725119590759,
+  "negative_l2_mean": 1.4095722436904907
+}

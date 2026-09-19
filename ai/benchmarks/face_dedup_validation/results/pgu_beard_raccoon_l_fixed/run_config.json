@@ -1,0 +1,14 @@
+{
+  "dataset": "PGU-Face",
+  "local_layout": "<root>/<numeric_subject_id>/<condition_image>",
+  "accepted_filename_regex": "^(?:img|image|im)[\\s_-]*0?([1-4])$",
+  "model_pack": "raccoon_l",
+  "calibration_json": "results\\calibration_raccoon_l\\calibration_summary.json",
+  "primary_tau_l2": 1.2580000000000005,
+  "parsed_subjects": 224,
+  "mapped_condition_images": 896,
+  "complete_four_condition_subjects": 224,
+  "primary_clean_beard_subjects": 224,
+  "include_sunglasses": false,
+  "embedding_failures": 20
+}

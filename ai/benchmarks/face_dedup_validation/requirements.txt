@@ -1,0 +1,10 @@
+# Pinned core stack for the September 2026 Windows experiments.
+# Python 3.14.x is expected.
+insightface==2.0
+onnxruntime-gpu[cuda,cudnn]==1.29.0
+faiss-cpu==1.15.0
+numpy==2.5.3
+opencv-python-headless==5.0.0.93
+pandas
+tqdm
+gdown
