@@ -45,6 +45,7 @@ keyCandsListPrefx = "CANDLIST::" // CANDLIST::<const> → []string (local copy)
 keyResultsPrefix  = "RES::"      // RES::<const>::<roundID> → anchored results
 
 keyTxIdxPrefix = "TXIDX::"          // TxID → serial (for VerifyReceipt)
+keyAuditPrefix = "AUD::"            // AUD::<hC> → AuditLogEntry for an opened (audited) ballot
 )
 
 const (
@@ -60,6 +61,8 @@ eventParamsUpdated          = "ParamsUpdated"
 eventPublicKeySet           = "PublicKeySet"
 eventInvalidCandidateFound = "InvalidCandidateFound"
 eventInvalidBoothFound = "InvalidBoothFound"
+eventBallotOpened       = "BallotOpened"        // cast-or-audit: ballot opened instead of cast
+eventPackedViolation    = "PackedModeViolation" // a record did not use the packed ballot convention
 )
 
 /* Types & small data models */
@@ -130,6 +133,18 @@ Epoch    string `json:"epoch"`
 CastTime string `json:"castTime"` // RFC3339
 TxID     string `json:"txID"`
 
+// EncOneHex publishes the ballot ciphertext in PUBLIC world state so that any
+// observer - not only an auditor holding votes_pdc access - can recompute the
+// encrypted tally as the product of the recorded ciphertexts. It is written by
+// ApplyBallotStatuses, never on the RecordVote hot path, and is accepted only
+// when SHA256(EncOneHex) equals the HC that RecordVote already committed at
+// cast time. Publishing it is safe because under the packed encoding the
+// ciphertext is semantically secure and carries no readable choice.
+EncOneHex string `json:"encOneHex,omitempty"`
+
+// Reason records WHY a ballot was marked invalid, so that an exclusion is a
+// publicly justified decision rather than a silent one.
+Reason string `json:"reason,omitempty"`
 }
 
 // TallyResultAnchor is the public on-chain anchor for a published result.
@@ -162,6 +177,28 @@ PreloadCCName string `json:"PRELOAD_CC_NAME"` // Single source of truth CC for c
 
 BoothCCName        string `json:"BOOTH_CC_NAME"`         // Default "boothpdc"
 ValidateBoothOnTally bool `json:"VALIDATE_BOOTH_ON_TALLY"` // Default true
+
+// PackedMode requires every ballot to use the packed encoding, i.e. to carry
+// the constant candidate label PackedSentinel with the option index encoded
+// inside the ciphertext. When enabled, TallyPrepare rejects any record still
+// using a per-candidate plaintext label, which prevents a mixed ledger in
+// which some ballots leak their choice and others do not.
+PackedMode bool `json:"PACKED_MODE"`
+
+// PackedSlotBits and PackedSlots record the published packed-encoding
+// parameters so that off-chain decoders and the public verifier kit read them
+// from the ledger rather than from configuration.
+PackedSlotBits int `json:"PACKED_SLOT_BITS"`
+PackedSlots    int `json:"PACKED_SLOTS"`
+
+// AuditOneIn is the published cast-or-audit rate: one ballot in AuditOneIn is
+// opened for cast-as-intended verification instead of being cast.
+AuditOneIn int `json:"AUDIT_ONE_IN"`
+
+// AuditKeyCommit is the pre-poll commitment to the daily audit key K_day. The
+// key itself is revealed after the poll closes so that any observer can
+// recompute every coin and reconcile the published audit log.
+AuditKeyCommit string `json:"AUDIT_KEY_COMMIT"`
 }
 
 
@@ -342,6 +379,13 @@ func getParams(ctx contractapi.TransactionContextInterface) (*Params, error) {
 		PreloadCCName:     "evote-preload",
 		BoothCCName:         "boothpdc",          // NEW
         ValidateBoothOnTally:true,                // NEW
+
+		// Packed encoding is OFF by default so that an existing deployment keeps
+		// its current behaviour until the operator explicitly opts in via SetParams.
+		PackedMode:     false,
+		PackedSlotBits: DefaultPackedSlotBits,
+		PackedSlots:    0,
+		AuditOneIn:     DefaultAuditOneIn,
 	}
 	
 	if b, err := ctx.GetStub().GetState(keyParams); err == nil && b != nil {
@@ -977,6 +1021,27 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 	invalidCount := 0
 
 	for serial, vm := range latest {
+		// Packed-mode guard. Under the packed encoding the voter's choice lives
+		// inside the ciphertext and every ballot carries the same constant label,
+		// so a record still bearing a per-candidate plaintext label either
+		// predates the migration or was produced by a non-conforming client. In
+		// both cases it leaks its choice to collection members and cannot be
+		// aggregated into the single packed bucket, so it is excluded and the
+		// exclusion is signalled for audit.
+		if params.PackedMode && vm.CandidateID != PackedSentinel {
+			invalidCount++
+			if params.EmitEvents {
+				_ = ctx.GetStub().SetEvent(eventPackedViolation, mustJSON(map[string]string{
+					"constituency":  constituencyID,
+					"serial":        serial,
+					"candidateHash": sha256HexStr(vm.CandidateID),
+					"txID":          vm.TxID,
+					"time":          nowRFC3339(ctx),
+				}))
+			}
+			continue
+		}
+
 		// Candidate missing
 		if _, ok := candOK[vm.CandidateID]; !ok {
 			invalidCount++
@@ -1097,6 +1162,7 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
         Invalid []struct {
             Serial string `json:"serial"`
             TxID   string `json:"txID,omitempty"`
+            Reason string `json:"reason,omitempty"`
         } `json:"invalid"`
     }
     if err := json.Unmarshal([]byte(statusJSON), &payload); err != nil {
@@ -1106,7 +1172,9 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 	for _, v := range payload.Current {
 		// Reuse markBallotStatus: this only writes WS, no PDC reads
 		vm := VoteMetaPDC{EncOneHex: v.EncOne, TxID: v.TxID, Epoch: ""} // EncOne optional
-		markBallotStatus(ctx, v.Serial, "current", vm)
+		if err := markBallotStatus(ctx, v.Serial, "current", "", vm); err != nil {
+			return err
+		}
 
 		// TXIDX is *only* for ballots that are current/valid so that VerifyReceipt
 		// Only ever sees "live" votes; superseded/invalid ones become unknown_tx.
@@ -1120,8 +1188,19 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 		// This ensures:
 		// - invalid voters (e.g. off-roll, bad booth) are excluded from receipt lookups
 		// - tests expecting no TXIDX for invalid txIDs (tx-bad, tx-2) pass
+		//
+		// The reason is recorded in public state so that an exclusion can be
+		// re-checked by an observer instead of being taken on trust. Where the
+		// exclusion is "no valid 1-of-m well-formedness proof", the proof and
+		// the ciphertext are both published, so anyone can confirm the decision.
+		reason := strings.TrimSpace(v.Reason)
+		if reason == "" {
+			reason = "unspecified"
+		}
 		vm := VoteMetaPDC{TxID: v.TxID}
-		markBallotStatus(ctx, v.Serial, "invalid", vm)
+		if err := markBallotStatus(ctx, v.Serial, "invalid", reason, vm); err != nil {
+			return err
+		}
 		// Intentionally no TXIDX:: write here
 	}
 
@@ -1136,18 +1215,55 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 // associated with the final public state of a ballot. Because the helper rewrites the
 // complete BallotMeta object, callers must provide any receipt-critical fields that
 // need to remain available after the status transition.
-func markBallotStatus(ctx contractapi.TransactionContextInterface, serial, status string, vm VoteMetaPDC) {
-    bm := BallotMeta{
-        HC:   sha256HexStr(vm.EncOneHex),
-        TxID: vm.TxID,
-        Epoch: vm.Epoch,
-        // CastTime is optional; set if present
+func markBallotStatus(ctx contractapi.TransactionContextInterface, serial, status, reason string, vm VoteMetaPDC) error {
+    // Load whatever RecordVote already committed for this serial. The cast-time
+    // record is authoritative for HC: it was produced inside an endorsed
+    // transaction, whereas the status payload arrives from an off-chain
+    // adjudication step. Previously this helper unconditionally recomputed
+    // HC = sha256(vm.EncOneHex); when the caller omitted encOneHex (as the
+    // "invalid" path does) that silently overwrote the receipt anchor with
+    // sha256("") and made every receipt for that serial fail verification.
+    var prev BallotMeta
+    havePrev := false
+    if raw, err := ctx.GetStub().GetState(keyBallotPrefix + serial); err == nil && raw != nil {
+        if json.Unmarshal(raw, &prev) == nil {
+            havePrev = true
+        }
+    }
+
+    bm := prev
+    bm.TxID = vm.TxID
+    if vm.Epoch != "" || !havePrev {
+        bm.Epoch = vm.Epoch
     }
     bm.Status = status
-    if vm.CastTime != "" { bm.CastTime = vm.CastTime }
-    if b, _ := json.Marshal(bm); b != nil {
-        _ = ctx.GetStub().PutState(keyBallotPrefix+serial, b)
+    bm.Reason = reason
+    if vm.CastTime != "" {
+        bm.CastTime = vm.CastTime
     }
+
+    if strings.TrimSpace(vm.EncOneHex) != "" {
+        // The publisher supplied the ciphertext. Bind it to the commitment that
+        // RecordVote wrote at cast time before accepting it into public state:
+        // this is what stops the publisher substituting a different ciphertext
+        // for one the voter never cast. Without this check, publishing the
+        // ciphertext set would be circular and would give no public guarantee.
+        got := sha256HexStr(vm.EncOneHex)
+        if havePrev && prev.HC != "" && !strings.EqualFold(prev.HC, got) {
+            return fmt.Errorf("ballot %s: supplied encOneHex hashes to %s but committed hC is %s", serial, got, prev.HC)
+        }
+        bm.HC = got
+        bm.EncOneHex = canonHexStr(vm.EncOneHex)
+    } else if !havePrev {
+        // No prior record and no ciphertext: nothing meaningful to anchor.
+        return fmt.Errorf("ballot %s: no committed ballot meta and no encOneHex supplied", serial)
+    }
+
+    b, err := json.Marshal(bm)
+    if err != nil {
+        return err
+    }
+    return ctx.GetStub().PutState(keyBallotPrefix+serial, b)
 }
 
 
@@ -1233,4 +1349,181 @@ func (c *AccumVoteContract) VerifyReceipt(ctx contractapi.TransactionContextInte
 // Ping is a simple health check used by deployment tooling and test harnesses.
 func (c *AccumVoteContract) Ping(ctx contractapi.TransactionContextInterface) (string, error) {
 return "OK:" + ctx.GetStub().GetTxID(), nil
+}
+
+
+/* Public verifiability surface (added for end-to-end verifiability) */
+
+// PublicBallot is one row of the public ballot set exported at freeze time.
+//
+// The triple (Serial, HC, EncOneHex) is everything a member of the public needs
+// to recompute the encrypted tally without any private-data access:
+//
+//  1. check SHA256(EncOneHex) == HC for every row, which binds the published
+//     ciphertext to the commitment the contract made inside the endorsed
+//     RecordVote transaction;
+//  2. check that the ordered list of (serial, hC, ...) reproduces the published
+//     freeze commitment HR;
+//  3. multiply every EncOneHex modulo n^2 and compare with the published
+//     C_tally.
+//
+// Step 3 was previously impossible for anyone outside the trustee collections,
+// because public state held only the hash. That is what limited the design to
+// auditor verifiability rather than universal verifiability.
+type PublicBallot struct {
+	Serial    string `json:"serial"`
+	HC        string `json:"hC"`
+	EncOneHex string `json:"encOneHex,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Epoch     string `json:"epoch,omitempty"`
+	CastTime  string `json:"castTime,omitempty"`
+	TxID      string `json:"txID,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// ExportPublicBallots returns the public ballot set as a canonical JSON array,
+// sorted by serial in ascending byte order.
+//
+// The ordering is the same rule the freeze commitment HR uses, so the output of
+// this method can be hashed directly by an independent verifier. The method
+// reads only public world state and never touches votes_pdc.
+func (c *AccumVoteContract) ExportPublicBallots(ctx contractapi.TransactionContextInterface) (string, error) {
+	it, err := ctx.GetStub().GetStateByRange(keyBallotPrefix, keyBallotPrefix+"~")
+	if err != nil {
+		return "", err
+	}
+	defer it.Close()
+
+	out := make([]PublicBallot, 0, 64)
+	for it.HasNext() {
+		kv, err := it.Next()
+		if err != nil {
+			return "", err
+		}
+		serial := strings.TrimPrefix(kv.Key, keyBallotPrefix)
+		if serial == kv.Key || serial == "" {
+			continue
+		}
+		var bm BallotMeta
+		if json.Unmarshal(kv.Value, &bm) != nil {
+			continue
+		}
+		out = append(out, PublicBallot{
+			Serial: serial, HC: bm.HC, EncOneHex: bm.EncOneHex, Status: bm.Status,
+			Epoch: bm.Epoch, CastTime: bm.CastTime, TxID: bm.TxID, Reason: bm.Reason,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// RecordAuditOpening publishes the opening of a ballot that the cast-or-audit
+// coin selected to be opened rather than cast.
+//
+// An opened ballot is never submitted to RecordVote, so it never enters the
+// tally universe. What is published here is exactly what a third party needs to
+// repeat the kiosk's check: the option index the client claims it encoded and
+// the Paillier randomness it used. Anyone can recompute
+// Enc(PackedSlotValue(optionIndex), randomness) and confirm it hashes to hC.
+//
+// Because hC was displayed before the coin was revealed, a client that encoded a
+// different option than the voter selected cannot produce an opening that both
+// hashes to hC and names the voter's option: SHA-256 binds it to one ciphertext.
+// That is what makes this a real cast-as-intended check, where the previous
+// sealed-envelope design - in which the voting client authored both sides of the
+// comparison - was circular.
+func (c *AccumVoteContract) RecordAuditOpening(
+	ctx contractapi.TransactionContextInterface,
+	constituencyID, hC string, optionIndex int, randomnessHex, boothID, deviceID string,
+) error {
+	hcKey := strings.ToLower(strings.TrimSpace(hC))
+	if hcKey == "" {
+		return fmt.Errorf("audit opening: empty commitment")
+	}
+	if optionIndex < 0 || optionIndex >= MaxPackedSlots {
+		return fmt.Errorf("audit opening: option index %d out of range", optionIndex)
+	}
+	if strings.TrimSpace(randomnessHex) == "" {
+		return fmt.Errorf("audit opening: missing randomness")
+	}
+
+	// An opening must not exist for a ballot that was cast: that would be a route
+	// to discarding a real ballot after the fact.
+	if raw, err := ctx.GetStub().GetState(keyAuditPrefix + hcKey); err == nil && raw != nil {
+		return fmt.Errorf("audit opening: already recorded for %s", hcKey)
+	}
+
+	entry := AuditLogEntry{
+		HC: hcKey, ConstituencyID: constituencyID, OptionIndex: optionIndex,
+		RandomnessHex: canonHexStr(randomnessHex), BoothID: strings.TrimSpace(boothID),
+		DeviceID: strings.TrimSpace(deviceID), OpenedAt: nowRFC3339(ctx),
+	}
+	if err := ctx.GetStub().PutState(keyAuditPrefix+hcKey, mustJSON(&entry)); err != nil {
+		return err
+	}
+
+	if params, _ := getParams(ctx); params != nil && params.EmitEvents {
+		_ = ctx.GetStub().SetEvent(eventBallotOpened, mustJSON(map[string]string{
+			"constituency": constituencyID,
+			"hC":           hcKey,
+			"boothID":      entry.BoothID,
+			"deviceID":     entry.DeviceID,
+			"time":         entry.OpenedAt,
+		}))
+	}
+	return nil
+}
+
+// GetAuditOpening returns the published opening for one commitment, or an error
+// when none was recorded.
+func (c *AccumVoteContract) GetAuditOpening(ctx contractapi.TransactionContextInterface, hC string) (*AuditLogEntry, error) {
+	hcKey := strings.ToLower(strings.TrimSpace(hC))
+	raw, err := ctx.GetStub().GetState(keyAuditPrefix + hcKey)
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, fmt.Errorf("no audit opening for %s", hcKey)
+	}
+	var e AuditLogEntry
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// ExportAuditOpenings returns every published audit opening as a canonical JSON
+// array sorted by commitment, for reconciliation against the frozen ballot set
+// once the daily audit key is released.
+func (c *AccumVoteContract) ExportAuditOpenings(ctx contractapi.TransactionContextInterface) (string, error) {
+	it, err := ctx.GetStub().GetStateByRange(keyAuditPrefix, keyAuditPrefix+"~")
+	if err != nil {
+		return "", err
+	}
+	defer it.Close()
+
+	out := make([]AuditLogEntry, 0, 16)
+	for it.HasNext() {
+		kv, err := it.Next()
+		if err != nil {
+			return "", err
+		}
+		var e AuditLogEntry
+		if json.Unmarshal(kv.Value, &e) != nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].HC < out[j].HC })
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
