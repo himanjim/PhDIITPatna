@@ -260,7 +260,7 @@ func TestPublish_HappyPath(t *testing.T) {
 // TestPublish_ConsistencyWithDecryption checks that the plaintext result anchored by
 // PublishResults matches the result obtained by decrypting the encrypted sums
 // returned from TallyPrepare. The purpose is not to test trustee decryption itself,
-– but to ensure consistency between the encrypted tally path and the published
+// but to ensure consistency between the encrypted tally path and the published
 // plaintext outcome.
 func TestPublish_ConsistencyWithDecryption(t *testing.T) {
 	setDefaultEnv(t)

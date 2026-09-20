@@ -122,7 +122,7 @@ func TestVoting_FirstVotePlusOne(t *testing.T) {
 // TestVoting_SameCandidateRevote_NoOp checks that a re-vote for the same candidate
 // does not change the encrypted tally outcome. Distinct transaction identifiers are
 // used to model two separate casts, but because the selected candidate is unchanged,
-– the net encrypted contribution should remain exactly one Enc(1) for that candidate.
+// the net encrypted contribution should remain exactly one Enc(1) for that candidate.
 func TestVoting_SameCandidateRevote_NoOp(t *testing.T) {
 	setProdEnv(t)
 
