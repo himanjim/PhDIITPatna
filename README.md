@@ -1,14 +1,23 @@
-﻿# PhDIITPatna
+# PhDIITPatna
 
 This repository contains the implementation material, benchmark code, configuration files, experimental artefacts, and supporting documentation for the PhD work at IIT Patna on AI- and blockchain-enabled internet voting.
 
-The repository brings together three connected strands of the prototype. The first is the AI component, which covers face verification, liveness assessment, FAISS-based de-duplication, and related benchmarking. The second is the Hyperledger Fabric component, which contains the chaincode, network definitions, setup material, and benchmark harnesses used to study the blockchain layer. The third is the frontend component, which provides a demonstration interface for selected user flows and API-performance measurements.
+The repository brings together three connected strands of the prototype. The first is the AI component, which covers face verification, liveness assessment, FAISS-based de-duplication, and related benchmarking. The second is the Hyperledger Fabric component, which contains the chaincode, network definitions, setup material, benchmark harnesses, and the public verification tools used to check a published election. The third is the frontend component, which provides a demonstration interface for selected user flows and API-performance measurements.
 
 ## Repository layout
 
-- `ai/` contains the AI-side codebase, including face-verification utilities, liveness services, FAISS search and de-duplication modules, calibration scripts, benchmark drivers, and technical runbooks.
-- `fabric/` contains the blockchain-side implementation, including chaincode, network configurations for Raft and SmartBFT deployments, synthetic-data utilities, benchmark scripts, setup notes, and captured benchmark results.
+- `ai/` contains the AI-side codebase, including face-verification utilities, liveness services, FAISS search and de-duplication modules, calibration scripts, benchmark drivers, the face de-duplication validation study, and technical runbooks.
+- `fabric/` contains the blockchain-side implementation, including chaincode, network configurations for Raft and SmartBFT deployments, synthetic-data utilities, benchmark scripts, the public verification tools, setup notes, and captured benchmark results.
 - `frontend/` contains the UI demonstration application and its associated documentation, tools, and performance artefacts.
+
+## What can be run from a clean clone
+
+Two parts of the repository are self-contained and reproduce without a network, a peer or a deployment.
+
+- The AccumVote chaincode test suite in `fabric/chaincode/accumvote/`. It runs against mocked Fabric interfaces. The vendor tree is not committed, so run `go mod vendor` once first. See that directory's README.
+- The public verification tools in `fabric/tools/`. `export_freeze.js` builds the verification pack that a published election exposes and `verify_public.py` runs the public checks over it. Both use only the standard library of their language, and their tests read a fixture the chaincode itself produced. See that directory's README.
+
+The face de-duplication validation study in `ai/benchmarks/face_dedup_validation/` is reproducible too, but it needs its own Python environment and the CelebA and PGU-Face datasets, which are not redistributed here. Its README sets out the procedure.
 
 ## Nature of the repository
 
@@ -26,6 +35,8 @@ In general:
 - treat `results/`, `perf/`, and similar folders as stored artefacts rather than active source code;
 - keep new code within the existing domain structure unless there is a clear technical reason to introduce a new directory;
 - make conservative structural changes, especially where filenames are already cited in scripts, runbooks, or benchmark notes.
+
+The last point carries real weight. The thesis components cite files in this repository by their exact path, so moving or renaming a file breaks a reference in a document that has already been circulated. Treat a rename as a change to the manuscript as well as to the tree.
 
 ## Scope and limitations
 

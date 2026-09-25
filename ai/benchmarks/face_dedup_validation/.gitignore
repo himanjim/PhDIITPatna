@@ -1,0 +1,20 @@
+# Local environment
+.venv/
+__pycache__/
+*.pyc
+
+# Datasets, model cache and embedding caches.
+# Embedding caches are derived biometric templates and can be regenerated from
+# the source datasets. Third-party face datasets are not redistributed here and
+# must be obtained under their original licences.
+data/
+cache/
+*.zip
+
+# Large per-query result files. These are reproducible from the scripts and are
+# not required in normal Git history. The compact summary, configuration and
+# audit files in the same directories are committed and must not be ignored.
+results/celeba_1n_raccoon_l/celeba_1n_query_details.csv
+results/calibration_1n_fpir_raccoon_l/celeba_1n_query_details_rethresholded.csv
+results/calibration_1n_fpir_raccoon_l/mated_search_results_calibration.csv
+results/calibration_1n_fpir_raccoon_l/nonmated_nearest_distance_l2.csv

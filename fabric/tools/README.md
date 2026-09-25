@@ -7,14 +7,17 @@ without any privileged access.
 |---|---|
 | `export_freeze.js` | Builds the verification pack for one constituency at the freeze point: the freeze list S, the published ciphertext set, the audit log, the query log, the parameters, the option list and the election public key, with a manifest that carries the freeze commitment HR and a digest of every file. |
 | `verify_public.py` | Runs the Tier A checks over a pack and prints which of them passed, which failed, and which could not be run on the present prototype. |
-| `test_export_freeze.js` | Tests for the exporter. |
-| `test_verify_public.py` | Tests for the verifier, including agreement with the Go implementation of the audit coin. |
-| `fixtures/` | A small election exported by the contract itself (see below). |
+| `test_export_freeze.js` | Tests for the exporter, 8 in total. |
+| `test_verify_public.py` | Tests for the verifier, 22 in total, including agreement with the Go implementation of the audit coin. |
+| `fixtures/` | A small election exported by the contract itself. See below. |
 
 ## Running them
 
 ```bash
-# a pack from files the chaincode produced
+# a pack from the fixture the contract produced
+node export_freeze.js --out pack --snapshot fixtures/snapshot.json
+
+# or from separate files the off-chain pipeline wrote
 node export_freeze.js --out pack \
      --ballots ballots.json --openings openings.json \
      --params params.json --pubkey publickey.json --options options.json
@@ -23,17 +26,22 @@ node export_freeze.js --out pack \
 node export_freeze.js --out pack --gateway --profile gateway.json --state UP --constituency C-001
 
 # the public checks; K_day is published after the poll closes
-python3 verify_public.py --pack pack --key-day <K_day hex> --total <decrypted packed total>
+python3 verify_public.py --pack pack \
+        --key-day "$(cat fixtures/keyday.txt)" \
+        --total "$(cat fixtures/total.txt)"
 ```
+
+Over the committed fixture the second command reports eight checks passed, none
+failed and two not available, and exits 0.
 
 `verify_public.py` exits 0 when every check that could be run passed, 1 when a
 check failed, and 2 on a usage error. Add `--json` for machine-readable output.
 
 Requirements: Node 18 or later and Python 3.9 or later, both with the standard
 library only. The `--gateway` path additionally needs `@hyperledger/fabric-gateway`
-and `@grpc/grpc-js`; it is loaded lazily, so a verifier who works from published
-files never installs them. That path talks to a peer and is therefore not
-covered by the offline tests.
+and `@grpc/grpc-js`. Both are loaded lazily, so a verifier who works from
+published files never installs them. That path talks to a peer and is therefore
+not covered by the offline tests.
 
 ## The checks
 
@@ -68,17 +76,30 @@ cd fabric/chaincode/accumvote
 FIXTURE_OUT=../../tools/fixtures go test -run TestFixture_ExportVerificationPack -count=1
 ```
 
+That command needs the chaincode module's dependencies to be present. The
+`vendor/` directory is not committed, so run `go mod vendor` once first. The
+procedure is set out in `fabric/chaincode/accumvote/README.md`.
+
 The test skips unless `FIXTURE_OUT` is set, so it does not affect an ordinary
-`go test ./...` run. Because the fixture comes from the contract, a change in the
-contract's export format breaks the tool tests instead of surfacing in a
-deployment.
+`go test ./...` run. The output is deterministic, so regenerating the fixture
+over an unchanged contract reproduces the committed files byte for byte. Because
+the fixture comes from the contract, a change in the contract's export format
+breaks the tool tests instead of surfacing in a deployment.
 
 ## Running the tests
 
 ```bash
-node --test fabric/tools/
+node --test fabric/tools/test_export_freeze.js
 python3 -m unittest discover -s fabric/tools -p 'test_*.py' -v
 ```
+
+The Node test runner discovers files named `*.test.js`, `*_test.js` or
+`test-*.js`. These files are named `test_*.py` and `test_*.js` to keep the two
+languages consistent with each other, so the JavaScript file is named explicitly
+on the command line rather than left to discovery.
+
+Neither suite needs the chaincode module, a peer or any network access. Both read
+only the committed fixture.
 
 ## Privacy rules the exporter enforces
 

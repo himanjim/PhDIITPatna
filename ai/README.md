@@ -3,10 +3,10 @@
 This directory contains the AI-side code and supporting documents used in the PhD prototype for face verification, liveness detection, FAISS-based de-duplication, benchmarking, and browser-side validation utilities.
 
 ## Structure
-- `benchmarks/` contains standalone benchmarking and validation scripts.
+- `benchmarks/` contains standalone benchmarking and validation scripts, and the `face_dedup_validation/` study that produced the de-duplication accuracy results reported in the manuscript.
 - `calibration/` contains threshold-calibration utilities.
 - `docs/` contains setup notes, command runbooks, and experiment support documents.
-- `face/` contains the liveness-verification pipeline, related services, and clip-based test tools.
+- `face/` contains the liveness-verification pipeline, related services, the gRPC protocol definition, and clip-based test tools.
 - `faiss/` contains FAISS-based de-duplication services, tests, and the gRPC/Triton FAISS stack.
 - `models/` contains model-conversion helpers.
 - `servers/` contains integration services that connect embedding generation to search.
@@ -17,6 +17,7 @@ This directory contains the AI-side code and supporting documents used in the Ph
 - `faiss/faiss_ms.py` remains a benchmark-oriented service variant because existing runbooks still refer to it.
 - `faiss/legacy/` is reserved for older experimental services kept only for reference.
 - `faiss/grpc_triton/` contains the gRPC/Triton FAISS service stack and related benchmarks.
+- `benchmarks/face_dedup_validation/` is a self-contained evaluation study with its own environment and requirements file. It uses the InsightFace `raccoon_l` pack and exact FAISS search, which is deliberately separate from the operational `buffalo_l`, Triton and TensorRT pipeline benchmarked elsewhere in this component.
 
 ## Practical guidance
 This component is script-oriented rather than package-oriented. Before adding new code, prefer to place it under the existing domain directory instead of creating a new top-level folder. New operational notes should go under `docs/`, not beside code.
