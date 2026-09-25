@@ -786,11 +786,11 @@ func b64url(b []byte) string {
     return s
 }
 
-// Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks models the receipt
+// Test_VerifyReceipt_SupersessionAfterRevote models the receipt
 // semantics of a sealed QR workflow. The kiosk must be able to decrypt both the old
 // and new QR payloads locally, but only the QR corresponding to the ballot finally
 // recognised as current should verify successfully against on-ledger receipt data.
-func Test_SealedQR_KioskDecrypt_VerifyReceipt_SupersessionWorks(t *testing.T) {
+func Test_VerifyReceipt_SupersessionAfterRevote(t *testing.T) {
 	setProdEnv(t)
 	h := newHarness(t)
 	defer h.ctrl.Finish()
