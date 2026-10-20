@@ -19,7 +19,6 @@ export type AppState = {
 
 export const state: AppState = {};
 
-Exact comment text to insert:
 /**
  * Remove all voter-session data from the in-memory store.
  *

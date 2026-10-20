@@ -34,7 +34,7 @@ type VoteRecord = {
   hC: string;
   castTime: string;
   nonce: string;
-  sealed: string;
+  ve: string;
   shortCode: string;
   qrPayload: string;
 };
@@ -265,15 +265,17 @@ async function handleCast(req: Request) {
   // Commitment hash hC is a hash over (serial|candidateId|nonce|ballotDigest).
   const hC = await sha256Hex(`${serial}|${body.candidateId}|${nonce}|${body.ballotDigest}`);
 
-  // "sealed" is opaque to Client A (designated verifier).
-  // We keep it as a random blob here to avoid giving proof outside supervised booth.
-  const sealed = `sealed_${randHex(18)}`;
+  // View envelope placeholder. In production Client A forms
+  // ve = Seal(pk_V, hC; j, r_s) and only the central view service can open it.
+  const ve = `ve_${randHex(18)}`;
 
   // Short code derived from hC.
   const shortCode = base32Short(hC);
 
-  // QR payload matches UI doc structure: {v,E,s,hC,nonce,sealed}
-  const qrObj = { v: 1, E: epoch, s: serial, hC, nonce, sealed };
+  // QR payload: {v,E,s,tx,hC,nonce,ve}. tx is needed by VerifyReceipt. ve is the
+  // view envelope (UI Section D.4); in production Client A seals it to pk_V, it is
+  // printed only, never sent by SMS. Here it is a random placeholder.
+  const qrObj = { v: 2, E: epoch, s: serial, tx: txID, hC, nonce, ve };
   const qrPayload = JSON.stringify(qrObj);
 
   const rec: VoteRecord = {
@@ -281,7 +283,7 @@ async function handleCast(req: Request) {
     constituencyId: session.constituencyId,
     contestId: body.contestId,
     candidateId: body.candidateId,
-    txID, epoch, serial, hC, castTime, nonce, sealed,
+    txID, epoch, serial, hC, castTime, nonce, ve,
     shortCode,
     qrPayload
   };
@@ -296,7 +298,7 @@ async function handleCast(req: Request) {
   SHORT_TO_SERIAL.set(shortCode, serial);
 
   const resp: CastResp = {
-    txID, epoch, serial, hC, castTime, nonce, sealed,
+    txID, epoch, serial, hC, castTime, nonce, ve,
     shortCode, qrPayload,
     smsSent: true,
     printAllowed: session.mode === "kiosk"
@@ -374,9 +376,12 @@ async function handleVerify(req: Request) {
   const latest = VOTES_BY_VOTER.get(rec.voterId);
   const superseded = latest ? (latest.serial !== rec.serial) : false;
 
-  // Simulate "designated verifier opening sealed": return candidate details only to Client B.
+  // Latest-ballot view (UI Section D.4): a candidate is returned only for the
+  // voter's current receipt, and it is the receipt's own candidate. A superseded
+  // receipt gets none. Mock only: the production kiosk opens ve in the view
+  // service and re-derives C_s against hC before showing anything.
   const ballot = await makeBallot(rec.constituencyId);
-  const cand = ballot.candidates.find(c => c.id === latest?.candidateId) || ballot.candidates.find(c => c.id === rec.candidateId);
+  const cand = superseded ? undefined : ballot.candidates.find(c => c.id === rec.candidateId);
 
   if (superseded) {
     return json({

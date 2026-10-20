@@ -13,8 +13,6 @@ import (
 	"crypto/hmac"
     "crypto/sha256"
 	"crypto/rand"
-	"crypto/aes"
-    "crypto/cipher"
     "encoding/json"
     "fmt"
 	"strings"
@@ -779,17 +777,10 @@ func bioTagHexFor(Ktag, embed []byte, serial, txID, constituency string) string 
 
 
 
-// b64url encodes bytes using URL-safe base64 without padding so that the sealed QR
-// payload remains compact and JSON-friendly in the tests.
-func b64url(b []byte) string {
-    s := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
-    return s
-}
-
-// Test_VerifyReceipt_SupersessionAfterRevote models the receipt
-// semantics of a sealed QR workflow. The kiosk must be able to decrypt both the old
-// and new QR payloads locally, but only the QR corresponding to the ballot finally
-// recognised as current should verify successfully against on-ledger receipt data.
+// Test_VerifyReceipt_SupersessionAfterRevote checks receipt semantics after a
+// re-vote: only the receipt of the ballot finally recognised as current verifies
+// against on-ledger receipt data. No receipt carries a readable choice; the kiosk
+// view of the latest ballot is covered in voterview_test.go.
 func Test_VerifyReceipt_SupersessionAfterRevote(t *testing.T) {
 	setProdEnv(t)
 	h := newHarness(t)
@@ -800,12 +791,6 @@ func Test_VerifyReceipt_SupersessionAfterRevote(t *testing.T) {
 	requireNoErr(t, h.setPK_UP())
 	requireNoErr(t, h.seedCandidates([]string{testCand1, testCand2}))
 	requireNoErr(t, h.openPoll())
-
-	// ECI kiosk key used to seal the vote choice inside the QR payload.
-	kioskKey := make([]byte, 32)
-	if _, err := rand.Read(kioskKey); err != nil {
-		t.Fatalf("rand.Read(kioskKey): %v", err)
-	}
 
 	type voteResp struct {
 		TxID   string `json:"txID"`
@@ -832,7 +817,6 @@ func Test_VerifyReceipt_SupersessionAfterRevote(t *testing.T) {
 
 	var r1 voteResp
 	requireNoErr(t, json.Unmarshal([]byte(ack1), &r1))
-	qrOld := makeSealedQRPayload(t, kioskKey, r1.TxID, r1.Serial, r1.HC, r1.Epoch, testCand1)
 
 	// ---- Cast 2 (new) ----
 	h.setTxID("tx-new")
@@ -852,7 +836,6 @@ func Test_VerifyReceipt_SupersessionAfterRevote(t *testing.T) {
 
 	var r2 voteResp
 	requireNoErr(t, json.Unmarshal([]byte(ack2), &r2))
-	qrNew := makeSealedQRPayload(t, kioskKey, r2.TxID, r2.Serial, r2.HC, r2.Epoch, testCand2)
 
 	// ---- Close and mark current vote (tx-new) ----
 	requireNoErr(t, h.closePoll())
@@ -863,125 +846,20 @@ func Test_VerifyReceipt_SupersessionAfterRevote(t *testing.T) {
 	statusJSON := fmt.Sprintf(`{"current":[{"serial":"%s","txID":"%s","encOneHex":"%s"}],"invalid":[]}`, "S-001", "tx-new", hexEncOneGood)
 	requireNoErr(t, h.cc.ApplyBallotStatuses(h.ctx, testConst, statusJSON))
 
-	// ---- Kiosk decrypts QR choice and checks the receipt on-ledger ----
+	// ---- Receipt checks on-ledger ----
 
-	// Latest QR must decrypt and verify as current.
-	envNew, choiceNew := kioskOpenSealedQRPayload(t, kioskKey, qrNew)
-	if choiceNew != testCand2 {
-		t.Fatalf("latest QR choice mismatch: got=%q want=%q", choiceNew, testCand2)
-	}
-	vrNew, err := h.cc.VerifyReceipt(h.ctx, envNew.TxID, envNew.HC)
+	// The latest receipt verifies as current.
+	vrNew, err := h.cc.VerifyReceipt(h.ctx, r2.TxID, r2.HC)
 	requireNoErr(t, err)
 	if !strings.Contains(vrNew, `"ok":true`) {
 		t.Fatalf("expected latest receipt ok=true; got: %s", vrNew)
 	}
 
-	// Old QR must still decrypt (kiosk can show the voter what they cast at that time),
-	// But receipt verification must fail because the ballot was superseded (tx-old no longer indexed as current).
-	envOld, choiceOld := kioskOpenSealedQRPayload(t, kioskKey, qrOld)
-	if choiceOld != testCand1 {
-		t.Fatalf("old QR choice mismatch: got=%q want=%q", choiceOld, testCand1)
-	}
-	vrOld, err := h.cc.VerifyReceipt(h.ctx, envOld.TxID, envOld.HC)
+	// The earlier receipt fails because the ballot was superseded (tx-old was never
+	// indexed as current).
+	vrOld, err := h.cc.VerifyReceipt(h.ctx, r1.TxID, r1.HC)
 	requireNoErr(t, err)
 	if !strings.Contains(vrOld, `"ok":false`) || !strings.Contains(vrOld, `"reason":"unknown_tx"`) {
 		t.Fatalf("expected old receipt ok=false with reason=unknown_tx; got: %s", vrOld)
 	}
-}
-
-
-type sealedQREnvelope struct {
-	V      int    `json:"v"`
-	TxID   string `json:"txID"`
-	Serial string `json:"serial"`
-	HC     string `json:"hC"`
-	Epoch  string `json:"epoch"`
-	Nonce  string `json:"nonce"`
-	Sealed string `json:"sealed"`
-}
-
-// makeSealedQRPayload constructs a compact JSON envelope containing the public
-// receipt fields together with an AEAD-sealed candidate identifier. The associated
-// data binds the sealed choice to the transaction and receipt metadata so that the
-// payload cannot be repurposed by simple field substitution.
-func makeSealedQRPayload(t *testing.T, kioskKey []byte, txID, serial, hC, epoch, candidateID string) string {
-	t.Helper()
-
-	block, err := aes.NewCipher(kioskKey)
-	if err != nil {
-		t.Fatalf("aes.NewCipher: %v", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatalf("cipher.NewGCM: %v", err)
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		t.Fatalf("rand.Read(nonce): %v", err)
-	}
-
-	// Bind the sealed choice to the public receipt fields to prevent cut-and-paste substitution.
-	aad := []byte(txID + "|" + serial + "|" + hC + "|" + epoch)
-	ct := gcm.Seal(nil, nonce, []byte(candidateID), aad)
-
-	env := sealedQREnvelope{
-		V:      1,
-		TxID:   txID,
-		Serial: serial,
-		HC:     hC,
-		Epoch:  epoch,
-		Nonce:  b64url(nonce),
-		Sealed: b64url(ct),
-	}
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("json.Marshal(sealedQREnvelope): %v", err)
-	}
-	return string(b)
-}
-
-// kioskOpenSealedQRPayload reverses the test QR sealing process and returns both the
-// public envelope and the recovered candidate identifier. The helper represents the
-// kiosk-side view: it can decrypt what was encoded into the QR payload, but it still
-// requires VerifyReceipt to decide whether the transaction remains current on ledger.
-func kioskOpenSealedQRPayload(t *testing.T, kioskKey []byte, qrPayload string) (sealedQREnvelope, string) {
-	t.Helper()
-
-	var env sealedQREnvelope
-	if err := json.Unmarshal([]byte(qrPayload), &env); err != nil {
-		t.Fatalf("json.Unmarshal(qrPayload): %v", err)
-	}
-
-	nonce, err := b64urlDecode(env.Nonce)
-	if err != nil {
-		t.Fatalf("b64urlDecode(nonce): %v", err)
-	}
-	ct, err := b64urlDecode(env.Sealed)
-	if err != nil {
-		t.Fatalf("b64urlDecode(sealed): %v", err)
-	}
-
-	block, err := aes.NewCipher(kioskKey)
-	if err != nil {
-		t.Fatalf("aes.NewCipher: %v", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatalf("cipher.NewGCM: %v", err)
-	}
-
-	aad := []byte(env.TxID + "|" + env.Serial + "|" + env.HC + "|" + env.Epoch)
-	pt, err := gcm.Open(nil, nonce, ct, aad)
-	if err != nil {
-		t.Fatalf("gcm.Open: %v", err)
-	}
-
-	return env, string(pt)
-}
-
-// b64urlDecode is the inverse of b64url and is used only by the sealed-QR test
-// helpers.
-func b64urlDecode(s string) ([]byte, error) {
-	return base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(s)
 }

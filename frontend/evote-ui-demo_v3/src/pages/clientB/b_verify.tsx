@@ -5,6 +5,9 @@ import { api, VerifyResp } from "../../services/api";
 import { clearSessionState } from "../../state";
 import { navigate } from "../../router";
 
+// How long the latest-ballot view shows the candidate (policy parameter, UI Section D.4).
+const VIEW_MS = 7000;
+
 /**
  * Receipt-verification page for the supervised Client B terminal.
  *
@@ -70,6 +73,11 @@ export function B_Verify() {
         qrOrShortCode: q.trim()
       });
       setResp(r);
+      // Latest-ballot view (UI Section D.4): the candidate stays on screen for a
+      // fixed interval only.
+      if (r.candidate) {
+        setTimeout(() => setResp(cur => (cur === r ? { ...r, candidate: undefined } : cur)), VIEW_MS);
+      }
     } catch (e: any) {
       setErr(e?.message || String(e));
     } finally {
@@ -120,9 +128,9 @@ export function B_Verify() {
             Commitment: <span class="kbd">{resp.hC.slice(0, 14)}…</span> • CastTime: <span class="kbd">{resp.castTime}</span>
           </div>
 
-          {resp.candidate && (
+          {resp.candidate && resp.status === "CONFIRMED" && (
             <div class="notice" style="margin-top:12px">
-              <strong>Recorded choice (booth-only view):</strong>
+              <strong>Your latest recorded vote (kiosk-only view):</strong>
               <div style="font-size:1.2rem;font-weight:700;margin-top:6px">{resp.candidate.name}</div>
               <div class="small">{resp.candidate.party}</div>
               <div class="small" style="margin-top:8px;color:var(--muted)">

@@ -12,7 +12,7 @@ validation flows.
 The runnable procedure for the AccumVote suite is in
 `fabric/chaincode/accumvote/README.md`. That file records the Go version the
 module declares, the one-off `go mod vendor` step needed because the vendor tree
-is not committed, the inventory of the 56 tests, and the environment-guarded
+is not committed, the inventory of the 60 tests, and the environment-guarded
 fixture generator. The notes in this directory are background material and
 should not be treated as the current command set where the two differ.
 

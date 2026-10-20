@@ -3,11 +3,12 @@
 //
 // # Why the coin exists
 //
-// The original design had Terminal B (the verifier kiosk) open a sealed envelope
-// produced by Terminal A (the voting client) and display the candidate it named.
-// That is circular: a compromised Terminal A writes both the envelope and the
-// ballot, so it can seal choice X while recording choice Y and the check always
-// agrees with itself.
+// A verifier kiosk that simply displayed a candidate named by Terminal A (the
+// voting client) would be circular: a compromised Terminal A writes both the
+// statement and the ballot, so it can name choice X while recording choice Y and
+// the check always agrees with itself. Every display of a choice must therefore
+// re-derive the ciphertext and compare it with the committed hC; this applies to
+// audit openings here and to the kiosk view of the latest ballot.
 //
 // A genuine cast-as-intended check requires that the client commit to the
 // ciphertext BEFORE it learns whether that ballot will be opened. Classic

@@ -75,7 +75,7 @@ export type CastResp = {
   hC: string; // commitment hash
   castTime: string; // ISO time
   nonce: string;
-  sealed: string; // opaque to Client A
+  ve: string; // view envelope (UI Section D.4): opened only by the central view service
   shortCode: string; // human-enterable receipt code
   qrPayload: string; // string encoded into QR (compact JSON here)
   smsSent: boolean;
@@ -94,7 +94,8 @@ export type VerifyResp = {
   serial: string;
   hC: string;
   castTime: string;
-  // Candidate details are returned only to Client B in supervised booths.
+  // Candidate details are returned only to Client B in supervised booths, and only
+  // when status is CONFIRMED, i.e. for the voter's latest ballot (UI Section D.4).
   candidate?: { id: string; name: string; party: string };
   reason?: string;
   canRevote: boolean;

@@ -10,7 +10,7 @@ public verification tools in `fabric/tools` consume.
 
 | File | Purpose |
 |---|---|
-| `accumvote.go` | The contract itself. Voter and candidate preload, ballot recording and supersession, poll state, the encrypted aggregate, the publication and export transactions, and the audit log. |
+| `accumvote.go` | The contract itself. Voter and candidate preload, ballot recording and supersession, ballot-status reconciliation (on a rolling interval while the poll is open and once more after it closes), poll state, the encrypted aggregate, the publication and export transactions, and the audit log. |
 | `packed.go` | The packed ballot encoding. One Paillier ciphertext carries every contest slot as a base `2^b` digit, so a single homomorphic product yields all option counts. Encoding, checked decoding and the overflow bound live here. |
 | `auditcoin.go` | The cast-or-audit coin. `AuditCoin` decides whether a ballot commitment is selected for opening, and `AuditKeyCommitment` produces the commitment to the day key that is published before the poll opens. |
 | `main.go` | The chaincode entry point used when the contract is packaged for a peer. |
@@ -19,7 +19,7 @@ public verification tools in `fabric/tools` consume.
 ## Test suite
 
 The suite is written against mocked Fabric interfaces, so it runs without a
-network, a peer or Docker. It contains 56 test functions. Fifty-five run in an
+network, a peer or Docker. It contains 60 test functions. Fifty-nine run in an
 ordinary `go test ./...` invocation and one is the fixture generator described
 below, which skips unless an environment variable is set.
 
@@ -32,6 +32,7 @@ below, which skips unless an environment variable is set.
 | `packed_test.go` | 7 | The packed encoding. Slot round trips, rejection of malformed input, the overflow bound, detection of an inflated ballot, the documented case a checked decode cannot catch, parameter validation and the result mapping. |
 | `auditcoin_test.go` | 8 | The cast-or-audit coin. Determinism and case insensitivity, dependence on the day key, the observed selection rate against the configured one, the key-commitment round trip, and reconciliation catching both an ignored coin and an unjustified opening. |
 | `verifiability_test.go` | 7 | The verifiability properties. Public recomputation of the tally, that a packed ciphertext hides the choice, rejection of a substituted ciphertext, preservation of the receipt anchor when a ballot is invalidated, and the recording and reconciliation of audit openings. |
+| `voterview_test.go` | 4 | Rolling reconciliation and the latest-ballot kiosk view. A rolling status round that skips a ballot already overtaken by a revote, refusal of an in-poll status entry that carries a ciphertext or lacks a transaction ID, a view that opens only the latest receipt, and detection of a terminal that sealed a different option from the one it encrypted. |
 | `contract_ping_test.go` | 2 | Construction of the contract and the liveness transaction the benchmark harnesses call. |
 | `harness_test.go` | 0 | Not a test file in itself. It holds the shared harness, the environment defaults and the helper assertions used by every other file. |
 | `fixture_export_test.go` | 1 | The fixture generator. See below. |

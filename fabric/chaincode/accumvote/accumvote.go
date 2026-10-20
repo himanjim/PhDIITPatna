@@ -7,7 +7,8 @@
 // only cheap structural checks at cast time, while voter-roll, candidate, and
 // booth/device validation are applied during tally preparation or later status
 // publication. Receipt verification is based on the public ballot record and a
-// transaction index that is created only for ballots finally recognised as current.
+// transaction index that is created only for ballots recognised as current, either
+// by rolling reconciliation while the poll is open or by the final run after close.
 
 package main
 
@@ -1148,6 +1149,16 @@ func (c *AccumVoteContract) TallyPrepare(ctx contractapi.TransactionContextInter
 // public world state and indexed by transaction identifier for later receipt
 // verification. Ballots listed as invalid are marked accordingly in BAL::<serial>.
 // This method updates public status metadata; it does not recompute tally contents.
+//
+// The method may also run while the poll is open, as a rolling reconciliation, so
+// that a supervised kiosk can confirm during polling that a receipt belongs to the
+// voter's latest ballot. RecordVote may overwrite BAL::<serial> between the moment
+// the payload is prepared and the moment it is applied, so in that mode three rules
+// apply to every entry (rollingEntryCheck): it must name its txID; an entry whose
+// txID is no longer the latest cast for its serial is skipped, and the next round
+// covers the newer ballot; and it may not carry a ciphertext, because the
+// ciphertext set is published only after the poll closes. After close the method
+// behaves exactly as before.
 func (c *AccumVoteContract) ApplyBallotStatuses(
     ctx contractapi.TransactionContextInterface,
     constituencyID string,
@@ -1169,7 +1180,22 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
         return fmt.Errorf("statusJSON parse: %w", err)
     }
 
+	// Rolling (in-poll) mode: see the method comment.
+	rolling, err := pollIsOpen(ctx, constituencyID)
+	if err != nil {
+		return err
+	}
+
 	for _, v := range payload.Current {
+		if rolling {
+			skip, err := rollingEntryCheck(ctx, v.Serial, v.TxID, v.EncOne)
+			if err != nil {
+				return err
+			}
+			if skip {
+				continue
+			}
+		}
 		// Reuse markBallotStatus: this only writes WS, no PDC reads
 		vm := VoteMetaPDC{EncOneHex: v.EncOne, TxID: v.TxID, Epoch: ""} // EncOne optional
 		if err := markBallotStatus(ctx, v.Serial, "current", "", vm); err != nil {
@@ -1184,6 +1210,15 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 	}
 
 	for _, v := range payload.Invalid {
+		if rolling {
+			skip, err := rollingEntryCheck(ctx, v.Serial, v.TxID, "")
+			if err != nil {
+				return err
+			}
+			if skip {
+				continue
+			}
+		}
 		// Mark the ballot as invalid in BAL::<serial>, but DO NOT create TXIDX.
 		// This ensures:
 		// - invalid voters (e.g. off-roll, bad booth) are excluded from receipt lookups
@@ -1206,6 +1241,35 @@ func (c *AccumVoteContract) ApplyBallotStatuses(
 
 	return nil
 
+}
+
+// rollingEntryCheck applies the in-poll rules of ApplyBallotStatuses to one entry.
+//
+// It returns skip=true when the entry names a cast that is no longer the latest
+// for its serial. Without this check a payload prepared before a re-vote would
+// write the old txID over the new ballot's record: BAL::<serial> would then pair
+// the new hC with the old txID, TXIDX would index the old transaction, and the
+// voter's latest receipt would fail verification. Missing txIDs and ciphertexts
+// are refused rather than skipped, because they indicate a malformed payload.
+func rollingEntryCheck(ctx contractapi.TransactionContextInterface, serial, txID, encOneHex string) (bool, error) {
+	if strings.TrimSpace(txID) == "" {
+		return false, fmt.Errorf("ballot %s: an in-poll status entry must carry txID", serial)
+	}
+	if strings.TrimSpace(encOneHex) != "" {
+		return false, fmt.Errorf("ballot %s: ciphertexts are published only after the poll closes", serial)
+	}
+	raw, err := ctx.GetStub().GetState(keyBallotPrefix + serial)
+	if err != nil {
+		return false, err
+	}
+	if raw == nil {
+		return false, fmt.Errorf("ballot %s: no committed ballot meta", serial)
+	}
+	var bm BallotMeta
+	if err := json.Unmarshal(raw, &bm); err != nil {
+		return false, err
+	}
+	return bm.TxID != txID, nil
 }
 
 
@@ -1434,9 +1498,9 @@ func (c *AccumVoteContract) ExportPublicBallots(ctx contractapi.TransactionConte
 // Because hC was displayed before the coin was revealed, a client that encoded a
 // different option than the voter selected cannot produce an opening that both
 // hashes to hC and names the voter's option: SHA-256 binds it to one ciphertext.
-// That is what makes this a real cast-as-intended check, where the previous
-// sealed-envelope design - in which the voting client authored both sides of the
-// comparison - was circular.
+// That is what makes this a real cast-as-intended check: a display of a label
+// written by the voting client, which authors both sides of the comparison,
+// would be circular.
 func (c *AccumVoteContract) RecordAuditOpening(
 	ctx contractapi.TransactionContextInterface,
 	constituencyID, hC string, optionIndex int, randomnessHex, boothID, deviceID string,
