@@ -144,6 +144,26 @@ test('the exporter runs over the contract-produced fixture and writes a complete
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('certificates are written to proofs.json only when supplied, sorted and digested', () => {
+  const snapshot = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'snapshot.json'), 'utf8'));
+  const base = {
+    ballots: snapshot.ballots, openings: snapshot.openings, querylog: snapshot.querylog,
+    params: snapshot.params, publicKey: snapshot.publicKey, options: snapshot.options, meta: snapshot.meta,
+  };
+  const without = ef.buildPack(base);
+  assert.strictEqual(without.files['proofs.json'], undefined);
+  assert.strictEqual(without.manifest.counts.proofs, undefined);
+
+  const pack = ef.buildPack(Object.assign({}, base, { proofs: snapshot.proofs.slice().reverse() }));
+  const proofs = JSON.parse(pack.files['proofs.json']);
+  assert.strictEqual(proofs.length, 10);
+  assert.deepStrictEqual(proofs.map((p) => p.serial), proofs.map((p) => p.serial).slice().sort());
+  assert.strictEqual(pack.manifest.files['proofs.json'].sha256, ef.sha256Hex(pack.files['proofs.json']));
+  assert.strictEqual(pack.manifest.counts.proofs, 10);
+  assert.strictEqual(pack.HR, without.HR, 'certificates do not change the freeze commitment');
+  assert.throws(() => ef.buildPack(Object.assign({}, base, { proofs: [snapshot.proofs[0], snapshot.proofs[0]] })), /duplicate certificate/);
+});
+
 test('the command line refuses an incomplete invocation', async () => {
   await assert.rejects(() => ef.main(['--out', tmpdir()]), /--snapshot/);
 });

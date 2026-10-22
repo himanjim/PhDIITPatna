@@ -15,6 +15,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -53,6 +55,28 @@ func searchRandomness(t *testing.T, k *paillierTestKey, keyDay []byte, optionInd
 	return "", ""
 }
 
+// fixtureRand is a deterministic byte stream for the certificates, so that
+// regenerating the fixture reproduces the committed files byte for byte. A real
+// voting client uses crypto/rand.
+type fixtureRand struct {
+	seed []byte
+	ctr  uint64
+	buf  []byte
+}
+
+func (f *fixtureRand) Read(p []byte) (int, error) {
+	for len(f.buf) < len(p) {
+		var c [8]byte
+		binary.BigEndian.PutUint64(c[:], f.ctr)
+		f.ctr++
+		h := sha256.Sum256(append(append([]byte{}, f.seed...), c[:]...))
+		f.buf = append(f.buf, h[:]...)
+	}
+	n := copy(p, f.buf)
+	f.buf = f.buf[n:]
+	return n, nil
+}
+
 func TestFixture_ExportVerificationPack(t *testing.T) {
 	outDir := os.Getenv("FIXTURE_OUT")
 	if outDir == "" {
@@ -89,7 +113,7 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 		{"A-0001", 0, "open"}, {"A-0002", 2, "open"}, {"A-0003", 3, "open"},
 	}
 
-	type castRow struct{ serial, txID, enc, hC string }
+	type castRow struct{ serial, txID, enc, hC, proof string }
 	var cast []castRow
 	var invalid []castRow
 	var queryLog []string
@@ -115,7 +139,16 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 		if got := hcFromRecordVote(t, ack); !strings.EqualFold(got, hc) {
 			t.Fatalf("contract commitment %s differs from the locally computed %s", got, hc)
 		}
-		row := castRow{serial: b.serial, txID: txID, enc: enc, hC: hc}
+		// The client's well-formedness certificate, which the gateway checks before
+		// RecordVote and which is published in the pack after the poll closes.
+		rInt, ok := new(big.Int).SetString(rHex, 16)
+		if !ok {
+			t.Fatalf("bad randomness %q", rHex)
+		}
+		proof, err := WFProve(&fixtureRand{seed: []byte("fixture-wf|" + b.serial)}, key.n, nil, slotBits, numSlots, b.option, rInt, b.serial, enc)
+		requireNoErr(t, err)
+		requireNoErr(t, WFVerify(key.n, nil, slotBits, numSlots, b.serial, enc, proof))
+		row := castRow{serial: b.serial, txID: txID, enc: enc, hC: hc, proof: proof}
 		if b.role == "invalid" {
 			invalid = append(invalid, row)
 			continue
@@ -168,6 +201,10 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 	for j := range options {
 		options[j] = fmt.Sprintf("option-%d", j)
 	}
+	proofs := make([]map[string]string, 0, len(cast))
+	for _, r := range cast {
+		proofs = append(proofs, map[string]string{"serial": r.serial, "wfProof": r.proof})
+	}
 	queries := make([]map[string]string, 0, len(queryLog))
 	for _, q := range queryLog {
 		queries = append(queries, map[string]string{"hC": q})
@@ -187,6 +224,7 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 		"params":    params,
 		"publicKey": map[string]string{"n": fmt.Sprintf("%x", key.n), "g": fmt.Sprintf("%x", new(big.Int).Add(key.n, big.NewInt(1))), "n2": fmt.Sprintf("%x", key.n2)},
 		"options":   options,
+		"proofs":    proofs,
 		"tally":     map[string]string{"cTally": aggregate.Text(16)},
 		"results":   map[string]any{"counts": decoded},
 	}

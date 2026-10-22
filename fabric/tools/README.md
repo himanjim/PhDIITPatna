@@ -5,10 +5,10 @@ without any privileged access.
 
 | File | What it does |
 |---|---|
-| `export_freeze.js` | Builds the verification pack for one constituency at the freeze point: the freeze list S, the published ciphertext set, the audit log, the query log, the parameters, the option list and the election public key, with a manifest that carries the freeze commitment HR and a digest of every file. |
+| `export_freeze.js` | Builds the verification pack for one constituency at the freeze point: the freeze list S, the published ciphertext set, the audit log, the query log, the parameters, the option list, the election public key and, when supplied, the ballots' well-formedness certificates, with a manifest that carries the freeze commitment HR and a digest of every file. |
 | `verify_public.py` | Runs the Tier A checks over a pack and prints which of them passed, which failed, and which could not be run on the present prototype. |
-| `test_export_freeze.js` | Tests for the exporter, 8 in total. |
-| `test_verify_public.py` | Tests for the verifier, 22 in total, including agreement with the Go implementation of the audit coin. |
+| `test_export_freeze.js` | Tests for the exporter, 9 in total. |
+| `test_verify_public.py` | Tests for the verifier, 26 in total, including agreement with the Go implementations of the audit coin and of the well-formedness certificate. |
 | `fixtures/` | A small election exported by the contract itself. See below. |
 
 ## Running them
@@ -20,7 +20,8 @@ node export_freeze.js --out pack --snapshot fixtures/snapshot.json
 # or from separate files the off-chain pipeline wrote
 node export_freeze.js --out pack \
      --ballots ballots.json --openings openings.json \
-     --params params.json --pubkey publickey.json --options options.json
+     --params params.json --pubkey publickey.json --options options.json \
+     --proofs proofs.json
 
 # or straight from a peer
 node export_freeze.js --out pack --gateway --profile gateway.json --state UP --constituency C-001
@@ -31,7 +32,7 @@ python3 verify_public.py --pack pack \
         --total "$(cat fixtures/total.txt)"
 ```
 
-Over the committed fixture the second command reports eight checks passed, none
+Over the committed fixture the second command reports nine checks passed, none
 failed and two not available, and exits 0.
 
 `verify_public.py` exits 0 when every check that could be run passed, 1 when a
@@ -57,6 +58,7 @@ not covered by the offline tests.
 | vi-a | the revealed K_day matches the commitment cK_day published before the poll | runs |
 | vi-b | cast-or-audit reconciliation: no recorded ballot was selected by the coin, every opening was selected, the two sets are disjoint, and every query-log entry is accounted for | runs |
 | vi-c | every published opening re-derives to its commitment | runs |
+| vii | every counted ballot carries a well-formedness certificate (proofs.json) proving that its ciphertext holds exactly one published option | runs when the pack carries proofs.json |
 
 A check that cannot be run is reported as "not available" rather than as a pass.
 The summary line states that the properties behind those checks are not
@@ -68,8 +70,9 @@ established by the run.
 `fabric/chaincode/accumvote/fixture_export_test.go`, which runs a small election
 against the contract itself: eleven ballots recorded under the packed encoding,
 one of them excluded with a published reason, three ballots that the cast-or-audit
-coin selected for opening, the tally, and the publication of the ciphertext set
-through `ApplyBallotStatuses`. Regenerate it with
+coin selected for opening, the tally, the publication of the ciphertext set
+through `ApplyBallotStatuses`, and a well-formedness certificate for every
+counted ballot. Regenerate it with
 
 ```bash
 cd fabric/chaincode/accumvote

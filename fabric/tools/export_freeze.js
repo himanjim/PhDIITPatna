@@ -6,8 +6,9 @@
  * The pack is the input of tools/verify_public.py and of any third-party
  * verifier. It contains only public material: the frozen ballot list, the
  * published ballot ciphertexts, the audit log of opened ballots, the query log,
- * the published parameters and the election public key. Nothing in the pack
- * comes from a private data collection.
+ * the published parameters, the election public key and, when the off-chain
+ * pipeline supplies them, the ballots' well-formedness certificates (proofs.json,
+ * keyed by serial). Nothing in the pack comes from a private data collection.
  *
  * Two sources are supported:
  *
@@ -35,7 +36,7 @@
  * Usage
  *   node export_freeze.js --out PACKDIR --ballots b.json --openings a.json \
  *        --params p.json --pubkey k.json [--options o.json] [--querylog q.json] \
- *        [--eid EID] [--constituency C-001] [--block 1234] [--txid abcd]
+ *        [--proofs w.json] [--eid EID] [--constituency C-001] [--block 1234] [--txid abcd]
  *
  *   node export_freeze.js --out PACKDIR --snapshot snapshot.json
  *
@@ -181,6 +182,22 @@ function normaliseOpenings(openings) {
 }
 
 
+/**
+ * normaliseProofs keeps one well-formedness certificate per serial, sorted by
+ * serial. The certificates are bound to their serial and ciphertext by their own
+ * hash, so they need no further anchoring: verify_public.py (check vii) reports
+ * a counted ballot whose certificate is missing or invalid as a failure.
+ */
+function normaliseProofs(proofs) {
+  const out = (proofs || []).map((p) => ({ serial: String(p.serial || ''), wfProof: String(p.wfProof || '') }));
+  for (const p of out) if (!p.serial || !p.wfProof) throw new Error('certificate entry without a serial or a proof');
+  out.sort((x, y) => compareBytes(x.serial, y.serial));
+  for (let i = 1; i < out.length; i++) {
+    if (out[i].serial === out[i - 1].serial) throw new Error('duplicate certificate for ' + out[i].serial);
+  }
+  return out;
+}
+
 function normaliseQueryLog(entries) {
   const out = (entries || []).map((q) => (typeof q === 'string' ? { hC: q.toLowerCase() } : { hC: String(q.hC || '').toLowerCase() }));
   for (const q of out) if (!q.hC) throw new Error('query log entry without a commitment');
@@ -219,6 +236,11 @@ function buildPack(input) {
   };
   if (input.tally !== undefined && input.tally !== null) files['tally.json'] = jcs(input.tally);
   if (input.results !== undefined && input.results !== null) files['results.json'] = jcs(input.results);
+  if (input.proofs !== undefined && input.proofs !== null) {
+    const proofs = normaliseProofs(input.proofs);
+    files['proofs.json'] = jcs(proofs);
+    counts.proofs = proofs.length;
+  }
 
   const fileIndex = {};
   for (const name of Object.keys(files).sort(compareUtf16)) {
@@ -302,6 +324,7 @@ function collectFromFiles(opts) {
       options: s.options || s.optList || [],
       tally: s.tally,
       results: s.results,
+      proofs: s.proofs,
       meta: s.meta || {},
     };
   }
@@ -369,6 +392,7 @@ async function collectFromGateway(opts) {
 const USAGE = `${TOOL} ${VERSION}
   node export_freeze.js --out PACKDIR --ballots b.json --openings a.json --params p.json --pubkey k.json
                         [--options o.json] [--querylog q.json] [--tally t.json] [--results r.json]
+                        [--proofs w.json]
                         [--eid EID] [--constituency C-001] [--block N] [--txid TXID]
   node export_freeze.js --out PACKDIR --snapshot snapshot.json
   node export_freeze.js --out PACKDIR --gateway --profile gw.json --state UP --constituency C-001
@@ -381,6 +405,8 @@ async function main(argv) {
     return 0;
   }
   const input = opts.gateway ? await collectFromGateway(opts) : collectFromFiles(opts);
+  // Certificates come from the off-chain pipeline, not from the ledger.
+  if (opts.proofs) input.proofs = readJsonMaybeString(opts.proofs);
   input.meta = Object.assign({}, input.meta, {
     eid: opts.eid || input.meta.eid,
     constituencyID: opts.constituency || input.meta.constituencyID,
@@ -408,4 +434,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { jcs, sha256Hex, buildS, hrFromS, buildPack, writePack, normaliseBallots, normaliseOpenings, normaliseQueryLog, parseArgs, main, VERSION, HR_DOMAIN };
+module.exports = { jcs, sha256Hex, buildS, hrFromS, buildPack, writePack, normaliseBallots, normaliseOpenings, normaliseQueryLog, normaliseProofs, parseArgs, main, VERSION, HR_DOMAIN };

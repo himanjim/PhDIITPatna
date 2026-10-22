@@ -153,6 +153,11 @@ class TestHappyPath(PackTestCase):
         self.assertNotIn("boothID", blob)
         self.assertNotIn("deviceID", blob)
 
+    def test_every_counted_ballot_holds_a_valid_certificate(self):
+        """The certificates in the fixture were made by the Go implementation
+        (wfproof.go), so this is also the agreement test for check vii."""
+        self.assertEqual(status_of(self.checks, "vii"), vp.PASS)
+
     def test_without_the_key_the_audit_check_is_reported_as_unavailable(self):
         checks = vp.run_checks(self.pack, None, None, self.total)
         self.assertEqual(status_of(checks, "vi"), vp.NA)
@@ -233,6 +238,27 @@ class TestDetection(PackTestCase):
         (pack.directory / "params.json").write_text('{"AUDIT_ONE_IN":1}', encoding="utf-8")
         checks = vp.run_checks(vp.load_pack(pack.directory), None, None, None)
         self.assertEqual(status_of(checks, "0"), vp.FAIL)
+
+    def test_a_ballot_without_a_certificate_is_caught(self):
+        snapshot = load_snapshot()
+        snapshot["proofs"] = snapshot["proofs"][1:]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vii"), vp.FAIL)
+        self.assertEqual(status_of(checks, "ii"), vp.PASS, "the ballot itself was not touched")
+
+    def test_a_certificate_moved_to_another_ballot_is_caught(self):
+        snapshot = load_snapshot()
+        first, second = snapshot["proofs"][0], snapshot["proofs"][1]
+        first["wfProof"], second["wfProof"] = second["wfProof"], first["wfProof"]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vii"), vp.FAIL)
+
+    def test_a_pack_without_certificates_reports_the_check_as_unavailable(self):
+        snapshot = load_snapshot()
+        del snapshot["proofs"]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vii"), vp.NA)
+        self.assertEqual([c for c in checks if c.status == vp.FAIL], [])
 
     def test_the_exit_status_reports_failure(self):
         snapshot = load_snapshot()

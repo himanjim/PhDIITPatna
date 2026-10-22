@@ -13,7 +13,7 @@ prototype.
 ## Module status
 
 `accumvote/` carries `go.mod`, `go.sum`, `main.go` and a `fakes` package of
-generated mocks, so its suite of 60 tests runs from a clean clone once
+generated mocks, so its suite of 63 tests runs from a clean clone once
 `go mod vendor` has been run. See `accumvote/README.md` for the commands and for
 the reason `vendor/` is not committed.
 

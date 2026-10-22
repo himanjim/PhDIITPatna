@@ -20,6 +20,9 @@ collection, to the voter roll, or to any trustee key.
                               was an "open" coin, the two sets are disjoint, the
                               query log is covered, and each opening re-derives
                               to its commitment
+  (vii) well-formedness       every counted ballot carries a certificate
+                              (proofs.json) proving that its ciphertext holds
+                              exactly one of the published options
 
 Threshold decryption and its proofs are specified but not implemented in the
 present prototype, so checks (iv) and (v) normally report "not available"
@@ -42,6 +45,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +57,9 @@ HR_DOMAIN = "HR_LIST_V1"
 AUDIT_COIN_DOMAIN = b"AUDIT_COIN_V1"
 AUDIT_KEY_COMMIT_DOMAIN = b"AUDIT_KEY_COMMIT_V1"
 S_FIELDS = ("serial", "hC", "txID", "epoch", "castTime", "status", "reason")
+WF_DOMAIN = "ACCUMVOTE_WF_V1"
+WF_PREFIX = "wf1"
+WF_CHALLENGE_MOD = 1 << 256
 
 PASS, FAIL, NA = "pass", "fail", "not available"
 
@@ -168,6 +175,7 @@ class Pack:
     options: List[str]
     tally: Optional[Dict[str, Any]]
     results: Optional[Dict[str, Any]]
+    proofs: Optional[List[Dict[str, str]]] = None
 
 
 def load_pack(directory: Path) -> Pack:
@@ -191,7 +199,7 @@ def load_pack(directory: Path) -> Pack:
         data[name] = value
         if text is not None:
             raw[name] = text
-    for name in ("tally.json", "results.json"):
+    for name in ("tally.json", "results.json", "proofs.json"):
         value, text = read(name, required=False)
         data[name] = value
         if text is not None:
@@ -210,6 +218,7 @@ def load_pack(directory: Path) -> Pack:
         options=data["options.json"],
         tally=data["tally.json"],
         results=data["results.json"],
+        proofs=data["proofs.json"],
     )
 
 
@@ -452,6 +461,76 @@ def check_openings_rederive(pack: Pack) -> Check:
     return Check("vi-c", "openings re-derive to their commitments", PASS, "all %d openings re-derive to their published commitment" % len(pack.openings))
 
 
+def wf_verify(n: int, g: int, slot_bits: int, num_options: int, serial: str, c: int, proof: str) -> bool:
+    """Verify one well-formedness certificate, exactly as WFVerify in
+    fabric/chaincode/accumvote/wfproof.go does.
+
+    The certificate is "wf1.<e_0>.<z_0>...". For each option k the verifier
+    forms u_k = c * g^(-M^k) mod n^2, recomputes a_k = z_k^n * u_k^(-e_k), and
+    checks that the e_k add up, modulo 2^256, to the hash of the statement and
+    the a_k. The hash includes the serial, so a certificate cannot be moved to
+    another ballot.
+    """
+    n2 = n * n
+    if not 1 < c < n2 or math.gcd(c, n2) != 1:
+        return False
+    if slot_bits < 8 or not 1 <= num_options <= 256:
+        return False
+    parts = (proof or "").strip().split(".")
+    if len(parts) != 1 + 2 * num_options or parts[0] != WF_PREFIX:
+        return False
+    commitments, e_sum = [], 0
+    for k in range(num_options):
+        try:
+            e_k, z_k = int(parts[1 + 2 * k], 16), int(parts[2 + 2 * k], 16)
+        except ValueError:
+            return False
+        if not 0 <= e_k < WF_CHALLENGE_MOD or not 0 < z_k < n or math.gcd(z_k, n) != 1:
+            return False
+        u_k = c * pow(pow(g, 1 << (slot_bits * k), n2), -1, n2) % n2
+        commitments.append(pow(z_k, n, n2) * pow(pow(u_k, e_k, n2), -1, n2) % n2)
+        e_sum += e_k
+    h = hashlib.sha256(("%s|%s|%x|%x|%x|%d|%d" % (WF_DOMAIN, serial, n, g, c, slot_bits, num_options)).encode("utf-8"))
+    for a_k in commitments:
+        h.update(("|%x" % a_k).encode("utf-8"))
+    return e_sum % WF_CHALLENGE_MOD == int.from_bytes(h.digest(), "big")
+
+
+def check_wellformedness(pack: Pack) -> Check:
+    if pack.proofs is None:
+        return Check("vii", "ballot well-formedness", NA, "the pack carries no certificates (proofs.json)")
+    slot_bits = int(pack.params.get("PACKED_SLOT_BITS") or 0)
+    slots = int(pack.params.get("PACKED_SLOTS") or 0)
+    if slot_bits <= 0 or slots <= 0:
+        return Check("vii", "ballot well-formedness", NA, "the pack does not publish PACKED_SLOT_BITS and PACKED_SLOTS")
+    try:
+        n = parse_hex(pack.public_key.get("n", ""), "public key n")
+        g = parse_hex(pack.public_key["g"], "public key g") if pack.public_key.get("g") else n + 1
+    except ValueError as exc:
+        return Check("vii", "ballot well-formedness", NA, str(exc))
+
+    by_serial = {str(p.get("serial")): str(p.get("wfProof") or "") for p in pack.proofs}
+    checked, missing, bad = 0, [], []
+    for row in pack.ballots:
+        if row.get("status") != "current" or not row.get("encOneHex"):
+            continue
+        serial = str(row.get("serial"))
+        proof = by_serial.get(serial, "")
+        if not proof:
+            missing.append(serial)
+            continue
+        checked += 1
+        if not wf_verify(n, g, slot_bits, slots, serial, parse_hex(row["encOneHex"], "ciphertext of %s" % serial), proof):
+            bad.append(serial)
+    if bad:
+        return Check("vii", "ballot well-formedness", FAIL, "%d of %d counted ballots carry a certificate that does not verify: %s" % (len(bad), checked, ", ".join(bad[:5])))
+    if missing:
+        return Check("vii", "ballot well-formedness", FAIL, "%d counted ballots carry no certificate: %s" % (len(missing), ", ".join(missing[:5])))
+    if checked == 0:
+        return Check("vii", "ballot well-formedness", NA, "no counted ballot to check")
+    return Check("vii", "ballot well-formedness", PASS, "%d counted ballots each hold exactly one of %d options" % (checked, slots))
+
+
 # --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
@@ -460,6 +539,7 @@ def run_checks(pack: Pack, key_day_hex: Optional[str], expected_hr: Optional[str
     checks.extend(check_decryption(pack, total))
     checks.append(check_authorisation(pack))
     checks.extend(check_audit(pack, key_day_hex))
+    checks.append(check_wellformedness(pack))
     return checks
 
 
