@@ -173,7 +173,7 @@ func PackedDecode(total *big.Int, slotBits, numSlots int) ([]uint64, error) {
 // A mismatch means the aggregate does not correspond to expectedBallots
 // well-formed unit votes. This catches naive inflation (a ballot encrypting more
 // than one vote) but NOT a balanced pair of ill-formed ballots that cancel out,
-// which is precisely why a per-ballot 1-of-m proof remains required.
+// which is precisely why a per-ballot 1-of-m proof remains required. (see wfproof.go)
 func PackedDecodeChecked(total *big.Int, slotBits, numSlots int, expectedBallots uint64) ([]uint64, error) {
 	counts, err := PackedDecode(total, slotBits, numSlots)
 	if err != nil {
