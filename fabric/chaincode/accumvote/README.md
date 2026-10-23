@@ -96,7 +96,7 @@ election against the contract and writes the resulting public material to disk i
 the shape that `fabric/tools/export_freeze.js` consumes. Fourteen ballots are
 scripted: ten recorded and counted, one recorded and then excluded with a
 published reason, and three selected by the cast-or-audit coin and opened instead
-of cast. The test skips unless `FIXTURE_OUT` names a directory.
+of cast. The test skips unless `FIXTURE_OUT` names a directory. It also writes a well-formedness certificate for each counted ballot, in a proofs block, with fixed randomness so the fixture is reproducible.
 
 ```bash
 cd fabric/chaincode/accumvote
