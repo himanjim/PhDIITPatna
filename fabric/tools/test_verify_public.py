@@ -14,8 +14,8 @@ Three kinds of test are here.
 
   2. The happy path. The verifier is run over the pack that export_freeze.js
      builds from the contract-produced fixture. Every check that can be run on
-     the present prototype must pass, and exactly the two checks that depend on
-     threshold decryption must report "not available".
+     the present prototype must pass, and only the quorum-certificate check,
+     which depends on threshold decryption, may report "not available".
 
   3. Detection. Each test in the last group damages one thing in the pack - a
      ciphertext, a serial, an opening, the audit key, the published counts - and
@@ -117,6 +117,19 @@ class TestAgreementWithTheContract(unittest.TestCase):
     def test_packed_slot_value_matches_the_contract(self):
         self.assertEqual(1 << (8 * 3), 16777216)
 
+    def test_ed25519_matches_rfc8032(self):
+        # RFC 8032 Section 7.1, tests 1 and 2; Go's crypto/ed25519 gives the same.
+        for pk, msg, sig in (
+            ("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", b"",
+             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+            ("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", b"\x72",
+             "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
+        ):
+            pk_b, sig_b = bytes.fromhex(pk), bytes.fromhex(sig)
+            self.assertTrue(vp.ed25519_verify(pk_b, msg, sig_b))
+            self.assertFalse(vp.ed25519_verify(pk_b, msg + b"!", sig_b))
+            self.assertFalse(vp.ed25519_verify(pk_b, msg, sig_b[:-1] + bytes([sig_b[-1] ^ 1])))
+
     def test_canonical_json_matches_the_exporter(self):
         # The same vectors are asserted in test_export_freeze.js.
         self.assertEqual(vp.jcs({"b": 1, "a": 2}), '{"a":2,"b":1}')
@@ -135,9 +148,20 @@ class TestHappyPath(PackTestCase):
         failed = [c for c in self.checks if c.status == vp.FAIL]
         self.assertEqual(failed, [], "failing checks: %s" % [(c.ref, c.detail) for c in failed])
 
-    def test_only_the_decryption_checks_are_unavailable(self):
+    def test_only_the_quorum_certificate_is_unavailable(self):
         absent = sorted(c.ref for c in self.checks if c.status == vp.NA)
-        self.assertEqual(absent, ["iv-a", "v"])
+        self.assertEqual(absent, ["v"])
+
+    def test_the_decryption_proof_verifies_without_a_supplied_total(self):
+        checks = vp.run_checks(self.pack, self.key_day, None, None)
+        self.assertEqual(status_of(checks, "iv-a"), vp.PASS)
+        self.assertEqual(status_of(checks, "iv-b"), vp.PASS)
+
+    def test_the_signed_indicator_count_and_the_turnout_reconcile(self):
+        """The attestation was signed by the Go implementation (crypto/ed25519),
+        so this is also the agreement test for check vi-d."""
+        self.assertEqual(status_of(self.checks, "vi-d"), vp.PASS)
+        self.assertEqual(status_of(self.checks, "viii"), vp.PASS)
 
     def test_the_freeze_commitment_is_recomputed_not_copied(self):
         rows = [{f: str(r.get(f, "")) for f in vp.S_FIELDS} for r in self.pack.S]
@@ -195,12 +219,12 @@ class TestDetection(PackTestCase):
     def test_a_terminal_that_ignored_the_coin_is_caught(self):
         """An opened ballot that was recorded as a cast vote instead."""
         snapshot = load_snapshot()
-        opening = snapshot["openings"][0]
+        opening = next(o for o in snapshot["openings"] if not o.get("requested"))
         snapshot["ballots"].append({
             "serial": "S-9999", "hC": opening["hC"], "encOneHex": "", "status": "current",
             "epoch": "E1", "castTime": "2026-01-01T00:00:00Z", "txID": "tx-ignored-coin",
         })
-        snapshot["openings"] = snapshot["openings"][1:]
+        snapshot["openings"] = [o for o in snapshot["openings"] if o["hC"] != opening["hC"]]
         checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
         self.assertEqual(status_of(checks, "vi-b"), vp.FAIL)
 
@@ -258,6 +282,55 @@ class TestDetection(PackTestCase):
         del snapshot["proofs"]
         checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
         self.assertEqual(status_of(checks, "vii"), vp.NA)
+        self.assertEqual([c for c in checks if c.status == vp.FAIL], [])
+
+    def test_a_wrong_decryption_total_is_caught(self):
+        snapshot = load_snapshot()
+        proof = snapshot["results"]["decryptionProof"]
+        proof["total"] = format(int(proof["total"], 16) + 1, "x")
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "iv-a"), vp.FAIL)
+
+    def test_a_proof_for_another_aggregate_is_caught(self):
+        snapshot = load_snapshot()
+        snapshot["results"]["decryptionProof"]["cTally"] = snapshot["ballots"][0]["encOneHex"]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "iv-a"), vp.FAIL)
+        self.assertEqual(status_of(checks, "iii"), vp.PASS, "the aggregate itself was not touched")
+
+    def test_a_query_hidden_from_the_log_is_caught_by_the_signed_count(self):
+        snapshot = load_snapshot()
+        snapshot["querylog"] = snapshot["querylog"][1:]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vi-d"), vp.FAIL)
+
+    def test_an_altered_attestation_is_caught(self):
+        snapshot = load_snapshot()
+        snapshot["auditAttestation"]["queries"] += 1
+        snapshot["querylog"].append({"hC": "00" * 32})
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vi-d"), vp.FAIL)
+
+    def test_a_requested_opening_without_a_query_is_caught(self):
+        snapshot = load_snapshot()
+        requested = next(o for o in snapshot["openings"] if o.get("requested") == "voter")
+        snapshot["querylog"] = [q for q in snapshot["querylog"] if q["hC"] != requested["hC"]]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vi-b"), vp.FAIL)
+
+    def test_more_ballots_than_authenticated_voters_is_caught(self):
+        snapshot = load_snapshot()
+        snapshot["turnout"]["boothVoters"] = 9
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "viii"), vp.FAIL)
+
+    def test_without_attestation_or_turnout_those_checks_are_unavailable(self):
+        snapshot = load_snapshot()
+        del snapshot["auditAttestation"]
+        del snapshot["turnout"]
+        checks = vp.run_checks(self.pack_from(snapshot), self.key_day, None, None)
+        self.assertEqual(status_of(checks, "vi-d"), vp.NA)
+        self.assertEqual(status_of(checks, "viii"), vp.NA)
         self.assertEqual([c for c in checks if c.status == vp.FAIL], [])
 
     def test_the_exit_status_reports_failure(self):

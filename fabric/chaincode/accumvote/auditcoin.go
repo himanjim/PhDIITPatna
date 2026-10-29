@@ -149,6 +149,9 @@ type AuditLogEntry struct {
 	BoothID        string `json:"boothID,omitempty"`
 	DeviceID       string `json:"deviceID,omitempty"`
 	OpenedAt       string `json:"openedAt,omitempty"`
+	// Requested is "voter" when the voter asked to check the ballot whatever
+	// the coin said (RecordRequestedAuditOpening); empty for a coin opening.
+	Requested string `json:"requested,omitempty"`
 }
 
 // ReconcileAuditLog checks a published audit log against the frozen ballot set.

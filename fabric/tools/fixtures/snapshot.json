@@ -1,4 +1,10 @@
 {
+ "auditAttestation": {
+  "constituencyID": "C-001",
+  "queries": 15,
+  "queryLogDigest": "17db6d33e40c221cb963a9c4705066fbcad9f3c061d91e70c4a1b953d70d4aab",
+  "signature": "d334d12f107b6137eed95395971409944374c66fff169603bb9396e0999e3585881ea848e2933192f9dbd8c606e0c5a81373cc63499bcf431b9c440c0e84e909"
+ },
  "ballots": [
   {
    "serial": "S-0001",
@@ -134,6 +140,16 @@
    "boothID": "B-0001",
    "deviceID": "D0010001000",
    "openedAt": "2025-11-15T02:31:00Z"
+  },
+  {
+   "hC": "cb30c4a4541584fef5659216bb3f71542fb820caa9308427ed5c77310078081f",
+   "constituencyID": "C-001",
+   "optionIndex": 1,
+   "randomnessHex": "36eb",
+   "boothID": "B-0001",
+   "deviceID": "D0010001000",
+   "openedAt": "2025-11-15T02:31:00Z",
+   "requested": "voter"
   }
  ],
  "options": [
@@ -153,7 +169,10 @@
   "PACKED_SLOT_BITS": 8,
   "PACKED_SLOTS": 4,
   "AUDIT_ONE_IN": 4,
-  "AUDIT_KEY_COMMIT": "04ff6174b274412c07683973e20c3cf7854d879f9cbd7bc43eaf35630bedfda1"
+  "AUDIT_KEY_COMMIT": "04ff6174b274412c07683973e20c3cf7854d879f9cbd7bc43eaf35630bedfda1",
+  "REQUIRE_DECRYPTION_PROOF": true,
+  "AUDIT_SIGNING_KEY": "5f233a694fe2be3714d112f31c07fe640b461b381527f3dfcb47e6d9bd0264f6",
+  "RECEIPT_SIGNING_KEY": "78ea4e1446771a0720903f0cc7f66d18551aba1e17d0b84d613b7d8ddf34151f"
  },
  "proofs": [
   {
@@ -244,6 +263,9 @@
   },
   {
    "hC": "557a59e8fe723065988f5a25ffeffe6c71f26d454325b6bc07b7cf483b2ca895"
+  },
+  {
+   "hC": "cb30c4a4541584fef5659216bb3f71542fb820caa9308427ed5c77310078081f"
   }
  ],
  "results": {
@@ -252,9 +274,20 @@
    2,
    3,
    2
-  ]
+  ],
+  "decryptionProof": {
+   "cTally": "6426f6d09ce1e860fc76f",
+   "total": "2030203",
+   "rho": "f12f1e8a37"
+  }
  },
  "tally": {
   "cTally": "6426f6d09ce1e860fc76f"
+ },
+ "turnout": {
+  "boothVoters": 11,
+  "constituencyID": "C-001",
+  "remoteVoters": 0,
+  "source": "Form 17C Part I, countersigned by polling agents"
  }
 }

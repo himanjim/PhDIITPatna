@@ -13,6 +13,9 @@ public verification tools in `fabric/tools` consume.
 | `accumvote.go` | The contract itself. Voter and candidate preload, ballot recording and supersession, ballot-status reconciliation (on a rolling interval while the poll is open and once more after it closes), poll state, the encrypted aggregate, the publication and export transactions, and the audit log. |
 | `packed.go` | The packed ballot encoding. One Paillier ciphertext carries every contest slot as a base `2^b` digit, so a single homomorphic product yields all option counts. Encoding, checked decoding and the overflow bound live here. |
 | `wfproof.go` | The ballot well-formedness certificate. `WFProve` (voting client) and `WFVerify` (verifier gateway, off-chain pipeline) prove and check that a packed ciphertext holds exactly one valid option, bound to the voter's serial. The contract does not call it; the certificates are checked before `RecordVote` and published in the verification pack after the poll closes. |
+| `decproof.go` | The single-key decryption proof. `VerifyDecryption` checks that a published total m is the decryption of the aggregate, and `DecryptionRandomness` lets the key holder produce the proof. `PublishResults` refuses a results payload whose proof fails, and requires one when `REQUIRE_DECRYPTION_PROOF` is set. |
+| `auditattest.go` | The audit-service controls around the coin. The query-log attestation that the HSM signs at close, and the rule that a voter-requested opening must have an indicator query and must not be a recorded ballot. |
+| `receiptsig.go` | The signed receipt. The gateway signs the receipt fields with the key published as `RECEIPT_SIGNING_KEY`; Client B and anyone holding the receipt can check it. The contract does not call this file. |
 | `auditcoin.go` | The cast-or-audit coin. `AuditCoin` decides whether a ballot commitment is selected for opening, and `AuditKeyCommitment` produces the commitment to the day key that is published before the poll opens. |
 | `main.go` | The chaincode entry point used when the contract is packaged for a peer. |
 | `collections_config.json` | The private-data collection definition used when the contract is deployed. |
@@ -20,7 +23,7 @@ public verification tools in `fabric/tools` consume.
 ## Test suite
 
 The suite is written against mocked Fabric interfaces, so it runs without a
-network, a peer or Docker. It contains 63 test functions. Sixty-two run in an
+network, a peer or Docker. It contains 69 test functions. Sixty-eight run in an
 ordinary `go test ./...` invocation and one is the fixture generator described
 below, which skips unless an environment variable is set.
 
@@ -35,9 +38,12 @@ below, which skips unless an environment variable is set.
 | `verifiability_test.go` | 7 | The verifiability properties. Public recomputation of the tally, that a packed ciphertext hides the choice, rejection of a substituted ciphertext, preservation of the receipt anchor when a ballot is invalidated, and the recording and reconciliation of audit openings. |
 | `voterview_test.go` | 4 | Rolling reconciliation and the latest-ballot kiosk view. A rolling status round that skips a ballot already overtaken by a revote, refusal of an in-poll status entry that carries a ciphertext or lacks a transaction ID, a view that opens only the latest receipt, and detection of a terminal that sealed a different option from the one it encrypted. |
 | `wfproof_test.go` | 3 | The well-formedness certificate. A certificate for every option, refusal to certify the balanced ill-formed pair, a zero ballot or a double vote, and binding of a certificate to its serial and its ciphertext. |
+| `decproof_test.go` | 3 | The decryption proof. The proof verifies for the packed total of a small election and fails for a wrong total, a wrong ρ or another aggregate; `PublishResults` accepts a valid proof and refuses a wrong count or a wrong total; with `REQUIRE_DECRYPTION_PROOF` set, results without a proof are refused, and without it they are accepted as before. |
+| `auditattest_test.go` | 2 | A voter-requested opening is recorded and labelled, and the reconciliation flags one with no query or one that was also cast; the query-log attestation verifies, and fails on a hidden query, a substituted query, another key or an altered signature. |
+| `receiptsig_test.go` | 1 | A receipt signature verifies, and fails when any signed field or the key changes. |
 | `contract_ping_test.go` | 2 | Construction of the contract and the liveness transaction the benchmark harnesses call. |
 | `harness_test.go` | 0 | Not a test file in itself. It holds the shared harness, the environment defaults and the helper assertions used by every other file. |
-| `fixture_export_test.go` | 1 | The fixture generator, which also writes a certificate for every counted ballot. See below. |
+| `fixture_export_test.go` | 1 | The fixture generator, which also writes a certificate for every counted ballot, a voter-requested opening, a decryption proof, a signed query-log attestation and turnout totals. See below. |
 
 `fakes/mock_stub.go` and `fakes/mock_txctx.go` are GoMock output for
 `shim.ChaincodeStubInterface` and `contractapi.TransactionContextInterface`. They
@@ -93,10 +99,15 @@ is needed, because the tests import no packages beyond those already pinned.
 
 `fixture_export_test.go` is not an assertion test. It runs a small but complete
 election against the contract and writes the resulting public material to disk in
-the shape that `fabric/tools/export_freeze.js` consumes. Fourteen ballots are
+the shape that `fabric/tools/export_freeze.js` consumes. Fifteen ballots are
 scripted: ten recorded and counted, one recorded and then excluded with a
-published reason, and three selected by the cast-or-audit coin and opened instead
-of cast. The test skips unless `FIXTURE_OUT` names a directory. It also writes a well-formedness certificate for each counted ballot, in a proofs block, with fixed randomness so the fixture is reproducible.
+published reason, three selected by the cast-or-audit coin and opened instead of
+cast, and one opened because the voter asked to check it. The test skips unless
+`FIXTURE_OUT` names a directory. It also writes a well-formedness certificate for
+each counted ballot, in a proofs block, with fixed randomness so the fixture is
+reproducible. The results are published with a decryption proof, and the audit
+service's query-log attestation and the Form 17C totals are added. The signing
+keys come from fixed seeds and are test keys only.
 
 ```bash
 cd fabric/chaincode/accumvote

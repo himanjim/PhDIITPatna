@@ -11,22 +11,31 @@ collection, to the voter roll, or to any trustee key.
    (ii) ballot commitments    SHA256(C_s) equals the hC recorded for that serial
   (iii) encrypted aggregate   the product of the current ciphertexts mod n^2
                               equals the published C_tally
-   (iv) decryption            trustee partial decryptions D_i and proofs pi_i,
-                              the deterministic combine, and the decoding of the
-                              option counts
+   (iv) decryption            the decryption proof: while one key decrypts, the
+                              published total m and rho satisfy
+                              C_tally = g^m * rho^n mod n^2 (under threshold
+                              custody, the trustee partial decryptions D_i and
+                              proofs pi_i take its place), and the decoding of
+                              the option counts
     (v) authorisation         the quorum certificate QC_TVP over h_TVP
    (vi) cast-or-audit         with the released K_day: every commitment in the
                               cast set was a "cast" coin, every published opening
                               was an "open" coin, the two sets are disjoint, the
-                              query log is covered, and each opening re-derives
-                              to its commitment
+                              query log is covered, every voter-requested
+                              opening had an indicator query, and each opening
+                              re-derives to its commitment; and the audit
+                              service's signed indicator count matches the
+                              published query log
   (vii) well-formedness       every counted ballot carries a certificate
                               (proofs.json) proving that its ciphertext holds
                               exactly one of the published options
+ (viii) turnout               the recorded ballots do not exceed the
+                              authenticated voters of the Form 17C returns
 
-Threshold decryption and its proofs are specified but not implemented in the
-present prototype, so checks (iv) and (v) normally report "not available"
-rather than failing. That is deliberate: a verifier must be able to tell the
+Threshold decryption and the quorum certificate are specified but not
+implemented in the present prototype, so check (v) normally reports "not
+available" rather than failing, and check (iv) relies on the single-key
+decryption proof. That is deliberate: a verifier must be able to tell the
 difference between a check that failed and a check that could not be run, and
 the summary states which properties are therefore not yet established.
 
@@ -60,6 +69,8 @@ S_FIELDS = ("serial", "hC", "txID", "epoch", "castTime", "status", "reason")
 WF_DOMAIN = "ACCUMVOTE_WF_V1"
 WF_PREFIX = "wf1"
 WF_CHALLENGE_MOD = 1 << 256
+QUERYLOG_DOMAIN = "QUERYLOG_V1"
+REQUESTED_BY_VOTER = "voter"
 
 PASS, FAIL, NA = "pass", "fail", "not available"
 
@@ -176,6 +187,8 @@ class Pack:
     tally: Optional[Dict[str, Any]]
     results: Optional[Dict[str, Any]]
     proofs: Optional[List[Dict[str, str]]] = None
+    attestation: Optional[Dict[str, Any]] = None
+    turnout: Optional[Dict[str, Any]] = None
 
 
 def load_pack(directory: Path) -> Pack:
@@ -199,7 +212,7 @@ def load_pack(directory: Path) -> Pack:
         data[name] = value
         if text is not None:
             raw[name] = text
-    for name in ("tally.json", "results.json", "proofs.json"):
+    for name in ("tally.json", "results.json", "proofs.json", "audit_attestation.json", "turnout.json"):
         value, text = read(name, required=False)
         data[name] = value
         if text is not None:
@@ -219,6 +232,8 @@ def load_pack(directory: Path) -> Pack:
         tally=data["tally.json"],
         results=data["results.json"],
         proofs=data["proofs.json"],
+        attestation=data["audit_attestation.json"],
+        turnout=data["turnout.json"],
     )
 
 
@@ -314,16 +329,54 @@ def check_aggregate(pack: Pack) -> Check:
     return Check("iii", "encrypted aggregate", PASS, "the product of %d ciphertexts equals the published C_tally" % counted)
 
 
+def verify_decryption(n: int, g: int, c: int, m: int, rho: int) -> bool:
+    """C = g^m * rho^n mod n^2, exactly as VerifyDecryption in decproof.go.
+
+    Paillier encryption is a bijection, so this proves that m is the decryption
+    of C. rho is the product of all ballots' randomness modulo n and reveals
+    nothing about any single ballot.
+    """
+    n2 = n * n
+    if not 1 < c < n2 or math.gcd(c, n2) != 1:
+        return False
+    if not 0 <= m < n or not 0 < rho < n or math.gcd(rho, n) != 1:
+        return False
+    return pow(g, m, n2) * pow(rho, n, n2) % n2 == c
+
+
 def check_decryption(pack: Pack, total: Optional[int]) -> List[Check]:
     out: List[Check] = []
-    have_shares = (pack.directory / "transcript_3.json").exists()
-    if not have_shares:
-        out.append(Check("iv-a", "partial decryptions and proofs", NA, "no transcript_3 in the pack: threshold decryption is specified but not implemented"))
+    proof = (pack.results or {}).get("decryptionProof")
+    if proof:
+        try:
+            n = parse_hex(pack.public_key.get("n", ""), "public key n")
+            g = parse_hex(pack.public_key["g"], "public key g") if pack.public_key.get("g") else n + 1
+            c = parse_hex(str(proof.get("cTally", "")), "proof cTally")
+            m = parse_hex(str(proof.get("total", "")), "proof total")
+            rho = parse_hex(str(proof.get("rho", "")), "proof rho")
+        except ValueError as exc:
+            out.append(Check("iv-a", "decryption proof", FAIL, str(exc)))
+            return out
+        declared = (pack.tally or {}).get("cTally") or (pack.tally or {}).get("C_tally")
+        if declared and parse_hex(str(declared), "published C_tally") != c:
+            out.append(Check("iv-a", "decryption proof", FAIL, "the proof is for a different aggregate than the published C_tally"))
+            return out
+        if not verify_decryption(n, g, c, m, rho):
+            out.append(Check("iv-a", "decryption proof", FAIL, "g^m * rho^n does not equal the aggregate: the published total is not its decryption"))
+            return out
+        out.append(Check("iv-a", "decryption proof", PASS, "the published total is the decryption of C_tally (single-key proof)"))
+        if total is None:
+            total = m
+        elif total != m:
+            out.append(Check("iv-b", "decoded option counts", FAIL, "the supplied total differs from the proved total"))
+            return out
+    elif (pack.directory / "transcript_3.json").exists():
+        out.append(Check("iv-a", "decryption proof", NA, "transcript_3 is present, but this tool does not yet verify trustee partial decryptions"))
     else:
-        out.append(Check("iv-a", "partial decryptions and proofs", NA, "transcript_3 is present, but this tool does not yet verify the proof format"))
+        out.append(Check("iv-a", "decryption proof", NA, "the results carry no decryption proof and there is no transcript_3"))
 
     if total is None:
-        out.append(Check("iv-b", "decoded option counts", NA, "no decrypted total supplied (--total)"))
+        out.append(Check("iv-b", "decoded option counts", NA, "no proved or supplied decrypted total (--total)"))
         return out
 
     slot_bits = int(pack.params.get("PACKED_SLOT_BITS") or 0)
@@ -398,10 +451,14 @@ def check_audit(pack: Pack, key_day_hex: Optional[str]) -> List[Check]:
     # decided after the freeze cannot excuse a terminal that ignored the coin.
     cast = [str(row.get("hC", "")).lower() for row in pack.S]
     opened = [str(o.get("hC", "")).lower() for o in pack.openings]
+    requested = [str(o.get("hC", "")).lower() for o in pack.openings if o.get("requested") == REQUESTED_BY_VOTER]
     queried = [str(q.get("hC", "")).lower() for q in pack.querylog]
 
     should_have_opened = [h for h in cast if audit_coin(key_day, h, one_in)]
-    opened_without_cause = [h for h in opened if not audit_coin(key_day, h, one_in)]
+    # A voter may ask to check a ballot whatever the coin says, so a requested
+    # opening is not an unjustified one; it must still have had an indicator query.
+    opened_without_cause = [h for h in opened if h not in set(requested) and not audit_coin(key_day, h, one_in)]
+    requested_unqueried = [h for h in requested if h not in set(queried)]
     both = sorted(set(cast) & set(opened))
     uncovered = [h for h in queried if h not in set(cast) | set(opened)]
 
@@ -414,6 +471,8 @@ def check_audit(pack: Pack, key_day_hex: Optional[str]) -> List[Check]:
         problems.append("%d commitments that appear both as cast and as opened" % len(both))
     if uncovered:
         problems.append("%d query-log entries that are neither cast nor opened" % len(uncovered))
+    if requested_unqueried:
+        problems.append("%d voter-requested openings with no indicator query" % len(requested_unqueried))
     evidence = {
         "castBallots": len(cast),
         "openings": len(opened),
@@ -422,11 +481,13 @@ def check_audit(pack: Pack, key_day_hex: Optional[str]) -> List[Check]:
         "openedWithoutCause": opened_without_cause[:20],
         "castAndOpened": both[:20],
         "queriedButUnaccounted": uncovered[:20],
+        "voterRequested": len(requested),
+        "requestedWithoutQuery": requested_unqueried[:20],
     }
     if problems:
         out.append(Check("vi-b", "cast-or-audit reconciliation", FAIL, "; ".join(problems), evidence))
     else:
-        out.append(Check("vi-b", "cast-or-audit reconciliation", PASS, "%d cast ballots and %d openings reconcile at rate 1 in %d" % (len(cast), len(opened), one_in), evidence))
+        out.append(Check("vi-b", "cast-or-audit reconciliation", PASS, "%d cast ballots and %d openings (%d requested by voters) reconcile at rate 1 in %d" % (len(cast), len(opened), len(requested), one_in), evidence))
 
     out.append(check_openings_rederive(pack))
     return out
@@ -531,6 +592,132 @@ def check_wellformedness(pack: Pack) -> Check:
     return Check("vii", "ballot well-formedness", PASS, "%d counted ballots each hold exactly one of %d options" % (checked, slots))
 
 
+# Ed25519 signature verification (RFC 8032, Section 5.1.7), standard library only.
+_ED_P = 2 ** 255 - 19
+_ED_L = 2 ** 252 + 27742317777372353535851937790883648493
+_ED_D = -121665 * pow(121666, -1, _ED_P) % _ED_P
+_ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
+
+
+def _ed_recover_x(y: int, sign: int) -> Optional[int]:
+    if y >= _ED_P:
+        return None
+    x2 = (y * y - 1) * pow(_ED_D * y * y + 1, -1, _ED_P) % _ED_P
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - x2) % _ED_P != 0:
+        x = x * _ED_I % _ED_P
+    if (x * x - x2) % _ED_P != 0:
+        return None
+    if (x & 1) != sign:
+        x = _ED_P - x
+    return x
+
+
+def _ed_add(p: Tuple[int, int, int, int], q: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    x1, y1, z1, t1 = p
+    x2, y2, z2, t2 = q
+    a = (y1 - x1) * (y2 - x2) % _ED_P
+    b = (y1 + x1) * (y2 + x2) % _ED_P
+    c = t1 * 2 * _ED_D * t2 % _ED_P
+    d = z1 * 2 * z2 % _ED_P
+    e, f, g, h = b - a, d - c, d + c, b + a
+    return (e * f % _ED_P, g * h % _ED_P, f * g % _ED_P, e * h % _ED_P)
+
+
+def _ed_mul(s: int, p: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    q = (0, 1, 1, 0)
+    while s > 0:
+        if s & 1:
+            q = _ed_add(q, p)
+        p = _ed_add(p, p)
+        s >>= 1
+    return q
+
+
+def _ed_equal(p: Tuple[int, int, int, int], q: Tuple[int, int, int, int]) -> bool:
+    return (p[0] * q[2] - q[0] * p[2]) % _ED_P == 0 and (p[1] * q[2] - q[1] * p[2]) % _ED_P == 0
+
+
+def _ed_decompress(b: bytes) -> Optional[Tuple[int, int, int, int]]:
+    if len(b) != 32:
+        return None
+    y = int.from_bytes(b, "little")
+    sign = y >> 255
+    y &= (1 << 255) - 1
+    x = _ed_recover_x(y, sign)
+    if x is None:
+        return None
+    return (x, y, 1, x * y % _ED_P)
+
+
+_ED_GY = 4 * pow(5, -1, _ED_P) % _ED_P
+_ED_G = (_ed_recover_x(_ED_GY, 0), _ED_GY, 1, _ed_recover_x(_ED_GY, 0) * _ED_GY % _ED_P)
+
+
+def ed25519_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    a = _ed_decompress(public_key)
+    r = _ed_decompress(signature[:32])
+    if a is None or r is None:
+        return False
+    s = int.from_bytes(signature[32:], "little")
+    if s >= _ED_L:
+        return False
+    h = int.from_bytes(hashlib.sha512(signature[:32] + public_key + message).digest(), "little") % _ED_L
+    return _ed_equal(_ed_mul(s, _ED_G), _ed_add(r, _ed_mul(h, a)))
+
+
+def query_log_digest(querylog: List[Dict[str, str]]) -> str:
+    rows = sorted((str(q.get("hC", "")).strip().lower() for q in querylog))
+    return sha256_hex(jcs([{"hC": h} for h in rows]))
+
+
+def check_query_attestation(pack: Pack) -> Check:
+    """The audit service's HSM signs, at close, how many indicators it issued and
+    a digest of the query log, under the key AUDIT_SIGNING_KEY published before
+    polling. A query hidden from the published log breaks the count."""
+    if not pack.attestation:
+        return Check("vi-d", "signed indicator count", NA, "the pack carries no query-log attestation (audit_attestation.json)")
+    key_hex = str(pack.params.get("AUDIT_SIGNING_KEY") or "").strip()
+    if not key_hex:
+        return Check("vi-d", "signed indicator count", NA, "the parameters publish no AUDIT_SIGNING_KEY")
+    a = pack.attestation
+    try:
+        key = bytes.fromhex(key_hex)
+        sig = bytes.fromhex(str(a.get("signature", "")))
+        queries = int(a.get("queries"))
+    except (ValueError, TypeError):
+        return Check("vi-d", "signed indicator count", FAIL, "the attestation or the signing key is malformed")
+    message = ("%s|%s|%d|%s" % (QUERYLOG_DOMAIN, a.get("constituencyID", ""), queries, str(a.get("queryLogDigest", "")).lower())).encode("utf-8")
+    if not ed25519_verify(key, message, sig):
+        return Check("vi-d", "signed indicator count", FAIL, "the attestation signature does not verify under AUDIT_SIGNING_KEY")
+    if queries != len(pack.querylog):
+        return Check("vi-d", "signed indicator count", FAIL, "the audit service issued %d indicators but the published query log has %d" % (queries, len(pack.querylog)))
+    if query_log_digest(pack.querylog) != str(a.get("queryLogDigest", "")).lower():
+        return Check("vi-d", "signed indicator count", FAIL, "the published query log does not match the signed digest")
+    return Check("vi-d", "signed indicator count", PASS, "the audit service signed for %d indicators and the published query log holds exactly those" % queries)
+
+
+def check_turnout(pack: Pack) -> Check:
+    """Recorded ballots must not exceed the authenticated voters of the Form 17C
+    returns (booth) and the remote-session count. Serials in S are distinct, so
+    each recorded ballot is a different voter."""
+    if not pack.turnout:
+        return Check("viii", "turnout reconciliation", NA, "the pack carries no turnout totals (turnout.json)")
+    try:
+        booth = int(pack.turnout.get("boothVoters", 0))
+        remote = int(pack.turnout.get("remoteVoters", 0))
+    except (ValueError, TypeError):
+        return Check("viii", "turnout reconciliation", FAIL, "the turnout totals are not integers")
+    recorded = len(pack.S)
+    if recorded > booth + remote:
+        return Check("viii", "turnout reconciliation", FAIL, "%d ballots are recorded but only %d voters were authenticated (%d at booths, %d remote)" % (recorded, booth + remote, booth, remote))
+    return Check("viii", "turnout reconciliation", PASS, "%d recorded ballots against %d authenticated voters (%d at booths, %d remote)" % (recorded, booth + remote, booth, remote))
+
+
 # --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
@@ -539,7 +726,9 @@ def run_checks(pack: Pack, key_day_hex: Optional[str], expected_hr: Optional[str
     checks.extend(check_decryption(pack, total))
     checks.append(check_authorisation(pack))
     checks.extend(check_audit(pack, key_day_hex))
+    checks.append(check_query_attestation(pack))
     checks.append(check_wellformedness(pack))
+    checks.append(check_turnout(pack))
     return checks
 
 

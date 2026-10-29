@@ -200,6 +200,22 @@ AuditOneIn int `json:"AUDIT_ONE_IN"`
 // key itself is revealed after the poll closes so that any observer can
 // recompute every coin and reconcile the published audit log.
 AuditKeyCommit string `json:"AUDIT_KEY_COMMIT"`
+
+// RequireDecryptionProof makes PublishResults refuse a results payload that
+// does not carry a valid decryptionProof (decproof.go). It is off by default so
+// that existing callers keep working until the operator opts in.
+RequireDecryptionProof bool `json:"REQUIRE_DECRYPTION_PROOF"`
+
+// AuditSigningKey is the hex Ed25519 public key of the audit service's HSM,
+// published before polling. The HSM signs, at close, the number of indicators
+// it issued and a digest of the query log (QueryLogAttestationMessage), so that
+// a query hidden from the published log is detectable.
+AuditSigningKey string `json:"AUDIT_SIGNING_KEY"`
+
+// ReceiptSigningKey is the hex Ed25519 public key with which the gateway signs
+// receipts (receiptsig.go), published before polling. The contract only
+// publishes it; signing and checking happen at the gateway and at Client B.
+ReceiptSigningKey string `json:"RECEIPT_SIGNING_KEY"`
 }
 
 
@@ -1336,14 +1352,34 @@ func markBallotStatus(ctx contractapi.TransactionContextInterface, serial, statu
 //
 // The method requires the poll to be closed, records the plaintext result payload
 // together with its round identifier and bundle hash, and emits an event for
-// downstream dashboards or auditors. It does not itself perform decryption or result
-// verification; those steps are assumed to have been completed off-chain.
+// downstream dashboards or auditors. It does not decrypt. When the payload carries
+// a decryptionProof it checks that the published total is the decryption of the
+// declared aggregate and that the counts follow from it, and refuses the results
+// otherwise.
 func (c *AccumVoteContract) PublishResults(ctx contractapi.TransactionContextInterface,
     constituencyID string, roundID string, resultJSON string, bundleHash string) error {
 
     open, err := pollIsOpen(ctx, constituencyID)
     if err != nil { return err }
     if open { return fmt.Errorf("poll must be closed for %s", constituencyID) }
+
+    // A results payload may carry a decryption proof (decproof.go). When it does,
+    // the published total must be the decryption of the declared aggregate and
+    // the published counts must follow from it; otherwise the results are
+    // refused. REQUIRE_DECRYPTION_PROOF makes the proof mandatory.
+    params, err := getParams(ctx)
+    if err != nil { return err }
+    state, err := resolveStateForReader(ctx)
+    if err != nil { return err }
+    n, g, _, err := loadPK(ctx, state)
+    if err != nil && params.RequireDecryptionProof { return err }
+    if err == nil {
+        found, perr := checkResultsProof(resultJSON, n, g, params.PackedSlotBits)
+        if perr != nil { return perr }
+        if !found && params.RequireDecryptionProof {
+            return fmt.Errorf("results for %s carry no decryption proof", constituencyID)
+        }
+    }
 
     ts, _ := ctx.GetStub().GetTxTimestamp()
     when := time.Unix(ts.Seconds, int64(ts.Nanos)).UTC().Format(time.RFC3339)
@@ -1505,6 +1541,27 @@ func (c *AccumVoteContract) RecordAuditOpening(
 	ctx contractapi.TransactionContextInterface,
 	constituencyID, hC string, optionIndex int, randomnessHex, boothID, deviceID string,
 ) error {
+	return recordOpening(ctx, constituencyID, hC, optionIndex, randomnessHex, boothID, deviceID, "")
+}
+
+// RecordRequestedAuditOpening publishes the opening of a ballot that the voter
+// asked to check, whatever the audit coin said. The entry is marked
+// requested = "voter", so that reconciliation does not report it as an
+// unjustified opening. A requested opening must still have an indicator query
+// in the query log and must not be a recorded ballot (CheckRequestedOpenings).
+// Because the voter's choice to check is unpredictable, a voting terminal that
+// knew K_day still could not tell which ballots will be opened.
+func (c *AccumVoteContract) RecordRequestedAuditOpening(
+	ctx contractapi.TransactionContextInterface,
+	constituencyID, hC string, optionIndex int, randomnessHex, boothID, deviceID string,
+) error {
+	return recordOpening(ctx, constituencyID, hC, optionIndex, randomnessHex, boothID, deviceID, RequestedByVoter)
+}
+
+func recordOpening(
+	ctx contractapi.TransactionContextInterface,
+	constituencyID, hC string, optionIndex int, randomnessHex, boothID, deviceID, requested string,
+) error {
 	hcKey := strings.ToLower(strings.TrimSpace(hC))
 	if hcKey == "" {
 		return fmt.Errorf("audit opening: empty commitment")
@@ -1525,7 +1582,7 @@ func (c *AccumVoteContract) RecordAuditOpening(
 	entry := AuditLogEntry{
 		HC: hcKey, ConstituencyID: constituencyID, OptionIndex: optionIndex,
 		RandomnessHex: canonHexStr(randomnessHex), BoothID: strings.TrimSpace(boothID),
-		DeviceID: strings.TrimSpace(deviceID), OpenedAt: nowRFC3339(ctx),
+		DeviceID: strings.TrimSpace(deviceID), OpenedAt: nowRFC3339(ctx), Requested: requested,
 	}
 	if err := ctx.GetStub().PutState(keyAuditPrefix+hcKey, mustJSON(&entry)); err != nil {
 		return err

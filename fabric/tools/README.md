@@ -5,10 +5,10 @@ without any privileged access.
 
 | File | What it does |
 |---|---|
-| `export_freeze.js` | Builds the verification pack for one constituency at the freeze point: the freeze list S, the published ciphertext set, the audit log, the query log, the parameters, the option list, the election public key and, when supplied, the ballots' well-formedness certificates, with a manifest that carries the freeze commitment HR and a digest of every file. |
+| `export_freeze.js` | Builds the verification pack for one constituency at the freeze point: the freeze list S, the published ciphertext set, the audit log, the query log, the parameters, the option list, the election public key and, when supplied, the ballots' well-formedness certificates, the audit service's signed query-log attestation and the Form 17C turnout totals, with a manifest that carries the freeze commitment HR and a digest of every file. |
 | `verify_public.py` | Runs the Tier A checks over a pack and prints which of them passed, which failed, and which could not be run on the present prototype. |
-| `test_export_freeze.js` | Tests for the exporter, 9 in total. |
-| `test_verify_public.py` | Tests for the verifier, 26 in total, including agreement with the Go implementations of the audit coin and of the well-formedness certificate. |
+| `test_export_freeze.js` | Tests for the exporter, 10 in total. |
+| `test_verify_public.py` | Tests for the verifier, 36 in total, including agreement with the Go implementations of the audit coin, the well-formedness certificate, the decryption proof and the Ed25519 attestation signature, and the RFC 8032 test vectors. |
 | `fixtures/` | A small election exported by the contract itself. See below. |
 
 ## Running them
@@ -21,19 +21,21 @@ node export_freeze.js --out pack --snapshot fixtures/snapshot.json
 node export_freeze.js --out pack \
      --ballots ballots.json --openings openings.json \
      --params params.json --pubkey publickey.json --options options.json \
-     --proofs proofs.json
+     --proofs proofs.json --attestation attestation.json --turnout turnout.json
 
 # or straight from a peer
 node export_freeze.js --out pack --gateway --profile gateway.json --state UP --constituency C-001
 
 # the public checks; K_day is published after the poll closes
 python3 verify_public.py --pack pack \
-        --key-day "$(cat fixtures/keyday.txt)" \
-        --total "$(cat fixtures/total.txt)"
+        --key-day "$(cat fixtures/keyday.txt)"
 ```
 
-Over the committed fixture the second command reports nine checks passed, none
-failed and two not available, and exits 0.
+Over the committed fixture the second command reports twelve checks passed, none
+failed and one not available, and exits 0. The decrypted total no longer has to
+be supplied: the results carry a decryption proof, and check (iv-b) decodes the
+proved total. `--total` is still accepted for a pack whose results carry no
+proof, and must then agree with it.
 
 `verify_public.py` exits 0 when every check that could be run passed, 1 when a
 check failed, and 2 on a usage error. Add `--json` for machine-readable output.
@@ -52,13 +54,15 @@ not covered by the offline tests.
 | i | HR recomputed from S equals the published HR | runs |
 | ii | SHA256(C_s) equals the recorded hC, for every current ballot | runs |
 | iii | the product of the current ciphertexts mod n² equals the published C_tally | runs |
-| iv-a | trustee partial decryptions D_i and proofs π_i | not available: threshold decryption is specified but not implemented |
+| iv-a | the published total m is the decryption of C_tally: g^m · ρ^n mod n² equals C_tally, for the ρ published with the results | runs when the results carry a decryption proof. This is the single-key proof; under threshold custody the trustee partial decryptions D_i and proofs π_i replace it, and those are specified but not implemented |
 | iv-b | the decoded option counts match the published result | runs when the decrypted total is supplied |
 | v | the quorum certificate QC_TVP over h_TVP | not available: result authorisation is specified but not implemented |
 | vi-a | the revealed K_day matches the commitment cK_day published before the poll | runs |
-| vi-b | cast-or-audit reconciliation: no recorded ballot was selected by the coin, every opening was selected, the two sets are disjoint, and every query-log entry is accounted for | runs |
+| vi-b | cast-or-audit reconciliation: no recorded ballot was selected by the coin, every opening was selected by the coin or requested by the voter, every voter-requested opening has a query-log entry, the two sets are disjoint, and every query-log entry is accounted for | runs |
 | vi-c | every published opening re-derives to its commitment | runs |
+| vi-d | the audit service's signed query-log attestation verifies under AUDIT_SIGNING_KEY, and its indicator count and digest match the published query log | runs when the pack carries audit_attestation.json |
 | vii | every counted ballot carries a well-formedness certificate (proofs.json) proving that its ciphertext holds exactly one published option | runs when the pack carries proofs.json |
+| viii | the recorded ballots do not exceed the authenticated voters of Form 17C Part I (booth and remote) | runs when the pack carries turnout.json. The booth figures are countersigned by polling agents; the remote figure comes from the authentication service, so for it this is a consistency check only |
 
 A check that cannot be run is reported as "not available" rather than as a pass.
 The summary line states that the properties behind those checks are not
@@ -70,9 +74,12 @@ established by the run.
 `fabric/chaincode/accumvote/fixture_export_test.go`, which runs a small election
 against the contract itself: eleven ballots recorded under the packed encoding,
 one of them excluded with a published reason, three ballots that the cast-or-audit
-coin selected for opening, the tally, the publication of the ciphertext set
-through `ApplyBallotStatuses`, and a well-formedness certificate for every
-counted ballot. Regenerate it with
+coin selected for opening and one that the voter asked to check, the tally, the
+publication of the ciphertext set through `ApplyBallotStatuses`, a
+well-formedness certificate for every counted ballot, results published with a
+decryption proof, a signed query-log attestation and the Form 17C totals. The
+signing keys are derived from fixed seeds so that the output stays
+reproducible; they are test keys only. Regenerate it with
 
 ```bash
 cd fabric/chaincode/accumvote

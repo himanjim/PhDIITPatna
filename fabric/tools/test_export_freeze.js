@@ -121,10 +121,12 @@ test('the exporter runs over the contract-produced fixture and writes a complete
   const written = ef.writePack(dir, pack);
   assert.ok(written.includes('S.json') && written.includes('manifest.json') && written.includes('ballots.json'));
 
-  // The contract exported eleven ballots, ten of them current, and three openings.
+  // The contract exported eleven ballots, ten of them current, and four openings,
+  // one of them requested by the voter.
   assert.strictEqual(pack.manifest.counts.ballots, 11);
   assert.strictEqual(pack.manifest.counts.current, 10);
-  assert.strictEqual(pack.manifest.counts.openings, 3);
+  assert.strictEqual(pack.manifest.counts.openings, 4);
+  assert.strictEqual(JSON.parse(pack.files['openings.json']).filter((o) => o.requested === 'voter').length, 1);
 
   // Every current ballot carries a ciphertext that hashes to its commitment.
   const crypto = require('crypto');
@@ -162,6 +164,24 @@ test('certificates are written to proofs.json only when supplied, sorted and dig
   assert.strictEqual(pack.manifest.counts.proofs, 10);
   assert.strictEqual(pack.HR, without.HR, 'certificates do not change the freeze commitment');
   assert.throws(() => ef.buildPack(Object.assign({}, base, { proofs: [snapshot.proofs[0], snapshot.proofs[0]] })), /duplicate certificate/);
+});
+
+test('the attestation and the turnout totals reach the pack only when supplied', () => {
+  const snapshot = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'snapshot.json'), 'utf8'));
+  const base = {
+    ballots: snapshot.ballots, openings: snapshot.openings, querylog: snapshot.querylog,
+    params: snapshot.params, publicKey: snapshot.publicKey, options: snapshot.options, meta: snapshot.meta,
+  };
+  const without = ef.buildPack(base);
+  assert.strictEqual(without.files['audit_attestation.json'], undefined);
+  assert.strictEqual(without.files['turnout.json'], undefined);
+  const pack = ef.buildPack(Object.assign({}, base, { auditAttestation: snapshot.auditAttestation, turnout: snapshot.turnout }));
+  assert.deepStrictEqual(JSON.parse(pack.files['audit_attestation.json']), snapshot.auditAttestation);
+  assert.deepStrictEqual(JSON.parse(pack.files['turnout.json']), snapshot.turnout);
+  for (const name of ['audit_attestation.json', 'turnout.json']) {
+    assert.strictEqual(pack.manifest.files[name].sha256, ef.sha256Hex(pack.files[name]));
+  }
+  assert.strictEqual(pack.HR, without.HR);
 });
 
 test('the command line refuses an incomplete invocation', async () => {

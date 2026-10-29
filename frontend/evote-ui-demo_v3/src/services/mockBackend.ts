@@ -35,6 +35,7 @@ type VoteRecord = {
   castTime: string;
   nonce: string;
   ve: string;
+  sig: string;
   shortCode: string;
   qrPayload: string;
 };
@@ -269,13 +270,20 @@ async function handleCast(req: Request) {
   // ve = Seal(pk_V, hC; j, r_s) and only the central view service can open it.
   const ve = `ve_${randHex(18)}`;
 
+  // Receipt signature placeholder. In production the gateway signs
+  // RECEIPT_V1|EID|serial|txID|hC|epoch|castTime with the key whose public half
+  // is RECEIPT_SIGNING_KEY (receiptsig.go), so a voter can prove that the system
+  // issued this receipt. The signature carries no choice.
+  const sig = `sig_${randHex(32)}`;
+
   // Short code derived from hC.
   const shortCode = base32Short(hC);
 
-  // QR payload: {v,E,s,tx,hC,nonce,ve}. tx is needed by VerifyReceipt. ve is the
-  // view envelope (UI Section D.4); in production Client A seals it to pk_V, it is
-  // printed only, never sent by SMS. Here it is a random placeholder.
-  const qrObj = { v: 2, E: epoch, s: serial, tx: txID, hC, nonce, ve };
+  // QR payload: {v,E,s,tx,hC,t,nonce,ve,sig}. tx is needed by VerifyReceipt. ve is
+  // the view envelope (UI Section D.4); in production Client A seals it to pk_V, it
+  // is printed only, never sent by SMS. t and sig let anyone check the receipt
+  // signature. Here ve and sig are random placeholders.
+  const qrObj = { v: 3, E: epoch, s: serial, tx: txID, hC, t: castTime, nonce, ve, sig };
   const qrPayload = JSON.stringify(qrObj);
 
   const rec: VoteRecord = {
@@ -283,7 +291,7 @@ async function handleCast(req: Request) {
     constituencyId: session.constituencyId,
     contestId: body.contestId,
     candidateId: body.candidateId,
-    txID, epoch, serial, hC, castTime, nonce, ve,
+    txID, epoch, serial, hC, castTime, nonce, ve, sig,
     shortCode,
     qrPayload
   };
@@ -298,7 +306,7 @@ async function handleCast(req: Request) {
   SHORT_TO_SERIAL.set(shortCode, serial);
 
   const resp: CastResp = {
-    txID, epoch, serial, hC, castTime, nonce, ve,
+    txID, epoch, serial, hC, castTime, nonce, ve, sig,
     shortCode, qrPayload,
     smsSent: true,
     printAllowed: session.mode === "kiosk"

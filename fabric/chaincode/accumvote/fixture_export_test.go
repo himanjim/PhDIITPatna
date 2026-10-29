@@ -15,6 +15,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -95,13 +96,22 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 	requireNoErr(t, err)
 	commit, err := AuditKeyCommitment(keyDay)
 	requireNoErr(t, err)
+	// Deterministic Ed25519 keys for the audit service's HSM and the gateway, so
+	// that the fixture is reproducible. Their public halves are published as
+	// parameters before polling.
+	auditSeed := sha256.Sum256([]byte("fixture-audit-hsm"))
+	auditKey := ed25519.NewKeyFromSeed(auditSeed[:])
+	gatewaySeed := sha256.Sum256([]byte("fixture-gateway"))
+	gatewayKey := ed25519.NewKeyFromSeed(gatewaySeed[:])
 
 	h.stubPreloadCandidatesOnly([]string{PackedSentinel})
 	requireNoErr(t, h.seedCandidates([]string{PackedSentinel}))
 	setPK_Custom(t, h, key.n)
 	requireNoErr(t, h.cc.SetParams(h.ctx, fmt.Sprintf(
-		`{"PACKED_MODE":true,"PACKED_SLOT_BITS":%d,"PACKED_SLOTS":%d,"AUDIT_ONE_IN":%d,"AUDIT_KEY_COMMIT":%q}`,
-		slotBits, numSlots, oneIn, commit)))
+		`{"PACKED_MODE":true,"PACKED_SLOT_BITS":%d,"PACKED_SLOTS":%d,"AUDIT_ONE_IN":%d,"AUDIT_KEY_COMMIT":%q,`+
+			`"REQUIRE_DECRYPTION_PROOF":true,"AUDIT_SIGNING_KEY":%q,"RECEIPT_SIGNING_KEY":%q}`,
+		slotBits, numSlots, oneIn, commit,
+		hex.EncodeToString(auditKey.Public().(ed25519.PublicKey)), hex.EncodeToString(gatewayKey.Public().(ed25519.PublicKey)))))
 	requireNoErr(t, h.openPoll())
 
 	script := []fixtureBallot{
@@ -111,6 +121,7 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 		{"S-0009", 3, "cast"}, {"S-0010", 3, "cast"},
 		{"S-0011", 1, "invalid"},
 		{"A-0001", 0, "open"}, {"A-0002", 2, "open"}, {"A-0003", 3, "open"},
+		{"V-0001", 1, "requested"},
 	}
 
 	type castRow struct{ serial, txID, enc, hC, proof string }
@@ -129,6 +140,11 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 			// An opened ballot is never submitted to RecordVote. Its opening is
 			// published instead, and the voter votes again.
 			requireNoErr(t, h.cc.RecordAuditOpening(h.ctx, testConst, hc, b.option, rHex, testBoothID, testDeviceID))
+			continue
+		}
+		if b.role == "requested" {
+			// The coin said cast, but the voter asked to check this ballot.
+			requireNoErr(t, h.cc.RecordRequestedAuditOpening(h.ctx, testConst, hc, b.option, rHex, testBoothID, testDeviceID))
 			continue
 		}
 
@@ -185,6 +201,23 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 		}
 	}
 
+	// The single-key decryption proof, and the results as PublishResults accepts
+	// them with REQUIRE_DECRYPTION_PROOF set.
+	rho, err := DecryptionRandomness(key.n, nil, key.lambda, aggregate, total)
+	requireNoErr(t, err)
+	results := map[string]any{
+		"counts":          decoded,
+		"decryptionProof": DecryptionProof{CTally: aggregate.Text(16), Total: total.Text(16), Rho: rho.Text(16)},
+	}
+	resultsJSON, err := json.Marshal(results)
+	requireNoErr(t, err)
+	requireNoErr(t, h.cc.PublishResults(h.ctx, testConst, "R1", string(resultsJSON), "bundle-fixture"))
+
+	// The audit service's signed count of the indicators it issued.
+	attestation := QueryLogAttestation{ConstituencyID: testConst, Queries: len(queryLog), QueryLogDigest: QueryLogDigest(queryLog)}
+	attestation.Signature = hex.EncodeToString(ed25519.Sign(auditKey,
+		QueryLogAttestationMessage(attestation.ConstituencyID, attestation.Queries, attestation.QueryLogDigest)))
+
 	ballotsJSON, err := h.cc.ExportPublicBallots(h.ctx)
 	requireNoErr(t, err)
 	openingsJSON, err := h.cc.ExportAuditOpenings(h.ctx)
@@ -226,7 +259,14 @@ func TestFixture_ExportVerificationPack(t *testing.T) {
 		"options":   options,
 		"proofs":    proofs,
 		"tally":     map[string]string{"cTally": aggregate.Text(16)},
-		"results":   map[string]any{"counts": decoded},
+		"results":   results,
+		// The audit service's signed indicator count, and the authenticated-voter
+		// totals of Form 17C Part I (one booth here, no remote voters).
+		"auditAttestation": attestation,
+		"turnout": map[string]any{
+			"constituencyID": testConst, "boothVoters": len(cast) + len(invalid), "remoteVoters": 0,
+			"source": "Form 17C Part I, countersigned by polling agents",
+		},
 	}
 
 	requireNoErr(t, os.MkdirAll(outDir, 0o755))

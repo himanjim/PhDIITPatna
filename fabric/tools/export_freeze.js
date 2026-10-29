@@ -8,7 +8,9 @@
  * published ballot ciphertexts, the audit log of opened ballots, the query log,
  * the published parameters, the election public key and, when the off-chain
  * pipeline supplies them, the ballots' well-formedness certificates (proofs.json,
- * keyed by serial). Nothing in the pack comes from a private data collection.
+ * keyed by serial), the audit service's signed query-log attestation
+ * (audit_attestation.json) and the authenticated-voter totals of Form 17C
+ * (turnout.json). Nothing in the pack comes from a private data collection.
  *
  * Two sources are supported:
  *
@@ -36,7 +38,7 @@
  * Usage
  *   node export_freeze.js --out PACKDIR --ballots b.json --openings a.json \
  *        --params p.json --pubkey k.json [--options o.json] [--querylog q.json] \
- *        [--proofs w.json] [--eid EID] [--constituency C-001] [--block 1234] [--txid abcd]
+ *        [--proofs w.json] [--attestation a.json] [--turnout t.json] [--eid EID] [--constituency C-001] [--block 1234] [--txid abcd]
  *
  *   node export_freeze.js --out PACKDIR --snapshot snapshot.json
  *
@@ -156,7 +158,7 @@ function normaliseBallots(ballots) {
 
 /**
  * normaliseOpenings keeps only the four fields a third party needs to repeat the
- * kiosk's check. The booth, the device and the time of an opening are dropped
+ * kiosk's check, plus the "requested" marker of a voter-requested opening. The booth, the device and the time of an opening are dropped
  * on purpose: an opening shows the option the voter had just chosen, so a booth
  * and a time would come close to naming that voter. Those fields stay in the
  * restricted audit record that Tier B uses for fault attribution (dashboard
@@ -168,6 +170,9 @@ function normaliseOpenings(openings) {
     constituencyID: o.constituencyID === undefined ? '' : String(o.constituencyID),
     optionIndex: Number(o.optionIndex),
     randomnessHex: String(o.randomnessHex || '').toLowerCase(),
+    // A voter-requested opening keeps its marker so that reconciliation does not
+    // treat it as an opening the coin failed to call for.
+    ...(o.requested ? { requested: String(o.requested) } : {}),
   }));
   for (const o of out) {
     if (!o.hC) throw new Error('audit opening without a commitment');
@@ -236,6 +241,8 @@ function buildPack(input) {
   };
   if (input.tally !== undefined && input.tally !== null) files['tally.json'] = jcs(input.tally);
   if (input.results !== undefined && input.results !== null) files['results.json'] = jcs(input.results);
+  if (input.auditAttestation !== undefined && input.auditAttestation !== null) files['audit_attestation.json'] = jcs(input.auditAttestation);
+  if (input.turnout !== undefined && input.turnout !== null) files['turnout.json'] = jcs(input.turnout);
   if (input.proofs !== undefined && input.proofs !== null) {
     const proofs = normaliseProofs(input.proofs);
     files['proofs.json'] = jcs(proofs);
@@ -325,6 +332,8 @@ function collectFromFiles(opts) {
       tally: s.tally,
       results: s.results,
       proofs: s.proofs,
+      auditAttestation: s.auditAttestation,
+      turnout: s.turnout,
       meta: s.meta || {},
     };
   }
@@ -392,7 +401,7 @@ async function collectFromGateway(opts) {
 const USAGE = `${TOOL} ${VERSION}
   node export_freeze.js --out PACKDIR --ballots b.json --openings a.json --params p.json --pubkey k.json
                         [--options o.json] [--querylog q.json] [--tally t.json] [--results r.json]
-                        [--proofs w.json]
+                        [--proofs w.json] [--attestation a.json] [--turnout t.json]
                         [--eid EID] [--constituency C-001] [--block N] [--txid TXID]
   node export_freeze.js --out PACKDIR --snapshot snapshot.json
   node export_freeze.js --out PACKDIR --gateway --profile gw.json --state UP --constituency C-001
@@ -407,6 +416,10 @@ async function main(argv) {
   const input = opts.gateway ? await collectFromGateway(opts) : collectFromFiles(opts);
   // Certificates come from the off-chain pipeline, not from the ledger.
   if (opts.proofs) input.proofs = readJsonMaybeString(opts.proofs);
+  // The query-log attestation comes from the audit service, the turnout totals
+  // from the Form 17C returns; neither comes from the ledger.
+  if (opts.attestation) input.auditAttestation = readJsonMaybeString(opts.attestation);
+  if (opts.turnout) input.turnout = readJsonMaybeString(opts.turnout);
   input.meta = Object.assign({}, input.meta, {
     eid: opts.eid || input.meta.eid,
     constituencyID: opts.constituency || input.meta.constituencyID,

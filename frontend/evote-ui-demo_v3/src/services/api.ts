@@ -76,6 +76,7 @@ export type CastResp = {
   castTime: string; // ISO time
   nonce: string;
   ve: string; // view envelope (UI Section D.4): opened only by the central view service
+  sig: string; // gateway Ed25519 signature over RECEIPT_V1|EID|serial|txID|hC|epoch|castTime (receiptsig.go)
   shortCode: string; // human-enterable receipt code
   qrPayload: string; // string encoded into QR (compact JSON here)
   smsSent: boolean;
